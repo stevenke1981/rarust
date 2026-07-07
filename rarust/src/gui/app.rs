@@ -30,18 +30,20 @@ struct LoadedArchive {
     entries: Vec<Entry>,
 }
 
-const BG: Color32 = Color32::from_rgb(12, 15, 18);
-const PANEL: Color32 = Color32::from_rgb(18, 22, 27);
-const PANEL_ALT: Color32 = Color32::from_rgb(24, 29, 35);
-const SURFACE: Color32 = Color32::from_rgb(30, 36, 43);
-const BORDER: Color32 = Color32::from_rgb(50, 59, 70);
-const TEXT: Color32 = Color32::from_rgb(236, 239, 243);
-const MUTED: Color32 = Color32::from_rgb(155, 166, 179);
-const ACCENT: Color32 = Color32::from_rgb(69, 145, 214);
-const ACCENT_SOFT: Color32 = Color32::from_rgb(34, 67, 96);
-const SUCCESS: Color32 = Color32::from_rgb(91, 189, 126);
-const WARNING: Color32 = Color32::from_rgb(232, 174, 83);
-const DANGER: Color32 = Color32::from_rgb(232, 106, 99);
+const WINDOW: Color32 = Color32::from_rgb(242, 244, 247);
+const CHROME: Color32 = Color32::from_rgb(232, 236, 241);
+const CHROME_DARK: Color32 = Color32::from_rgb(216, 222, 230);
+const LIST_BG: Color32 = Color32::from_rgb(255, 255, 255);
+const HEADER_BG: Color32 = Color32::from_rgb(226, 231, 238);
+const ROW_ALT: Color32 = Color32::from_rgb(248, 250, 252);
+const BORDER: Color32 = Color32::from_rgb(177, 187, 199);
+const TEXT: Color32 = Color32::from_rgb(26, 30, 36);
+const MUTED: Color32 = Color32::from_rgb(83, 93, 107);
+const ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
+const SELECTED: Color32 = Color32::from_rgb(214, 233, 255);
+const SUCCESS: Color32 = Color32::from_rgb(38, 128, 67);
+const WARNING: Color32 = Color32::from_rgb(154, 103, 0);
+const DANGER: Color32 = Color32::from_rgb(184, 40, 31);
 
 impl RarustApp {
     /// Create a new GUI app, optionally bound to an archive path.
@@ -144,6 +146,12 @@ impl RarustApp {
             .collect()
     }
 
+    fn selected_entry(&self) -> Option<&Entry> {
+        let archive = self.archive.as_ref()?;
+        let selected = self.selected?;
+        archive.entries.get(selected)
+    }
+
     fn extract_selected(&mut self, entry_name: String, is_directory: bool) {
         let Some(archive_path) = self.archive_path.clone() else {
             return;
@@ -210,52 +218,160 @@ impl RarustApp {
     }
 
     fn show_menu_bar(&mut self, ui: &mut Ui) {
-        Panel::top("menu_bar")
+        Panel::top("classic_menu")
             .frame(
                 Frame::NONE
-                    .fill(PANEL)
-                    .inner_margin(Margin::symmetric(16, 10)),
+                    .fill(CHROME)
+                    .inner_margin(Margin::symmetric(8, 2)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(self.i18n.t(Message::AppTitle))
-                            .heading()
-                            .strong()
-                            .color(TEXT),
-                    );
-                    ui.add_space(12.0);
-                    status_pill(ui, &self.status, status_color(&self.status, &self.i18n));
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(secondary_button(self.i18n.t(Message::Refresh)))
-                            .clicked()
-                        {
-                            self.reload_archive();
-                        }
-
-                        ui.menu_button(self.i18n.t(Message::Language), |ui| {
-                            for locale in Locale::ALL {
-                                let selected = self.i18n.locale() == locale;
-                                if ui
-                                    .selectable_label(selected, locale.display_name())
-                                    .clicked()
-                                {
-                                    self.i18n.set_locale(locale);
-                                    self.status = self.i18n.t(Message::StatusReady).to_owned();
-                                    ui.close();
-                                }
-                            }
-                        });
-
-                        if ui
-                            .add(primary_button(self.i18n.t(Message::OpenArchive)))
-                            .clicked()
-                        {
+                    ui.menu_button("File", |ui| {
+                        if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
                             self.pick_archive_file();
+                            ui.close();
+                        }
+                        if ui.button(self.i18n.t(Message::Refresh)).clicked() {
+                            self.reload_archive();
+                            ui.close();
                         }
                     });
+
+                    ui.menu_button("Commands", |ui| {
+                        if ui
+                            .add_enabled(
+                                self.selected_entry().is_some(),
+                                Button::new(self.i18n.t(Message::Extract)),
+                            )
+                            .clicked()
+                        {
+                            if let Some(entry) = self.selected_entry() {
+                                self.extract_selected(entry.name.clone(), entry.is_directory);
+                            }
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(
+                                self.archive_path.is_some(),
+                                Button::new(self.i18n.t(Message::Test)),
+                            )
+                            .clicked()
+                        {
+                            self.test_archive();
+                            ui.close();
+                        }
+                    });
+
+                    ui.menu_button(self.i18n.t(Message::Language), |ui| {
+                        for locale in Locale::ALL {
+                            let selected = self.i18n.locale() == locale;
+                            if ui
+                                .selectable_label(selected, locale.display_name())
+                                .clicked()
+                            {
+                                self.i18n.set_locale(locale);
+                                self.status = self.i18n.t(Message::StatusReady).to_owned();
+                                ui.close();
+                            }
+                        }
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(self.i18n.t(Message::AppTitle)).color(MUTED));
+                    });
+                });
+            });
+    }
+
+    fn show_toolbar(&mut self, ui: &mut Ui) {
+        Panel::top("classic_toolbar")
+            .frame(
+                Frame::NONE
+                    .fill(CHROME_DARK)
+                    .inner_margin(Margin::symmetric(8, 6)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized(
+                            [86.0, 38.0],
+                            toolbar_button(self.i18n.t(Message::OpenArchive)),
+                        )
+                        .clicked()
+                    {
+                        self.pick_archive_file();
+                    }
+
+                    let selected = self.selected_entry().map(|entry| {
+                        (
+                            entry.name.clone(),
+                            entry.is_directory,
+                            entry.size,
+                            entry.is_encrypted,
+                        )
+                    });
+                    let can_extract = selected.is_some();
+                    if ui
+                        .add_enabled(
+                            can_extract,
+                            Button::new(toolbar_label(self.i18n.t(Message::Extract)))
+                                .min_size(Vec2::new(86.0, 38.0)),
+                        )
+                        .clicked()
+                        && let Some((name, is_directory, _, _)) = selected.clone()
+                    {
+                        self.extract_selected(name, is_directory);
+                    }
+
+                    if ui
+                        .add_enabled(
+                            self.archive_path.is_some(),
+                            Button::new(toolbar_label(self.i18n.t(Message::Test)))
+                                .min_size(Vec2::new(86.0, 38.0)),
+                        )
+                        .clicked()
+                    {
+                        self.test_archive();
+                    }
+
+                    if ui
+                        .add_sized([86.0, 38.0], toolbar_button(self.i18n.t(Message::Refresh)))
+                        .clicked()
+                    {
+                        self.reload_archive();
+                    }
+
+                    ui.separator();
+
+                    if let Some((_, _, size, encrypted)) = selected {
+                        ui.label(RichText::new(util::format_size(size)).color(MUTED));
+                        if encrypted {
+                            ui.label(RichText::new(self.i18n.t(Message::Encrypted)).color(WARNING));
+                        }
+                    } else {
+                        ui.label(RichText::new(self.i18n.t(Message::SelectFile)).color(MUTED));
+                    }
+                });
+            });
+    }
+
+    fn show_path_bar(&mut self, ui: &mut Ui) {
+        Panel::top("classic_path_bar")
+            .frame(
+                Frame::NONE
+                    .fill(CHROME)
+                    .inner_margin(Margin::symmetric(8, 6)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(self.i18n.t(Message::Archive)).strong());
+                    archive_path_field(ui, self.archive_path.as_deref().unwrap_or("-"));
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(self.i18n.t(Message::SearchPlaceholder)).color(MUTED));
+                    ui.add_sized(
+                        [220.0, 24.0],
+                        TextEdit::singleline(&mut self.search).desired_width(220.0),
+                    );
                 });
             });
     }
@@ -267,8 +383,9 @@ impl RarustApp {
         Panel::top("font_warning")
             .frame(
                 Frame::NONE
-                    .fill(Color32::from_rgb(52, 39, 18))
-                    .inner_margin(Margin::symmetric(16, 8)),
+                    .fill(Color32::from_rgb(255, 247, 222))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(230, 192, 94)))
+                    .inner_margin(Margin::symmetric(8, 5)),
             )
             .show(ui, |ui| {
                 ui.colored_label(
@@ -282,119 +399,9 @@ impl RarustApp {
             });
     }
 
-    fn show_file_list(&mut self, ui: &mut Ui) {
-        Panel::left("file_list")
-            .default_size(360.0)
-            .min_size(280.0)
-            .resizable(true)
-            .frame(
-                Frame::NONE
-                    .fill(PANEL_ALT)
-                    .inner_margin(Margin::symmetric(14, 14)),
-            )
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new(self.i18n.t(Message::Entries))
-                        .strong()
-                        .color(TEXT),
-                );
-                ui.add_space(8.0);
-                ui.add(
-                    TextEdit::singleline(&mut self.search)
-                        .hint_text(self.i18n.t(Message::SearchPlaceholder))
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(12.0);
-
-                if self.archive_path.is_none() {
-                    empty_panel(
-                        ui,
-                        self.i18n.t(Message::Welcome),
-                        self.i18n.t(Message::WelcomeDetail),
-                    );
-                    ui.add_space(12.0);
-                    if ui
-                        .add_sized(
-                            [ui.available_width(), 36.0],
-                            primary_button(self.i18n.t(Message::OpenArchive)),
-                        )
-                        .clicked()
-                    {
-                        self.pick_archive_file();
-                    }
-                    return;
-                }
-
-                if let Some(err) = &self.load_error {
-                    error_panel(ui, self.i18n.t(Message::StatusError), err);
-                    return;
-                }
-
-                if let Some(loaded) = &self.archive {
-                    let total_size = loaded.entries.iter().map(|entry| entry.size).sum::<u64>();
-                    stat_strip(
-                        ui,
-                        &loaded.entries.len().to_string(),
-                        self.i18n.t(Message::FilesCount),
-                        self.i18n.t(Message::TotalSize),
-                        &util::format_size(total_size),
-                    );
-                    ui.add_space(12.0);
-                }
-
-                let filtered: Vec<(usize, String, bool)> = self
-                    .filtered_entries()
-                    .into_iter()
-                    .map(|(idx, entry)| {
-                        let label = if entry.is_directory {
-                            format!("[DIR] {}/", entry.name)
-                        } else {
-                            format!("[FILE] {}", entry.name)
-                        };
-                        (idx, label, entry.is_directory)
-                    })
-                    .collect();
-
-                if filtered.is_empty() {
-                    empty_panel(
-                        ui,
-                        self.i18n.t(Message::EmptyArchive),
-                        self.i18n.t(Message::SearchPlaceholder),
-                    );
-                    return;
-                }
-
-                ScrollArea::vertical()
-                    .id_salt("archive_entry_list")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (idx, label, is_directory) in filtered {
-                            let selected = self.selected == Some(idx);
-                            let text_color = if selected {
-                                TEXT
-                            } else if is_directory {
-                                Color32::from_rgb(216, 191, 115)
-                            } else {
-                                TEXT
-                            };
-                            let response = ui.add_sized(
-                                [ui.available_width(), 28.0],
-                                Button::selectable(
-                                    selected,
-                                    RichText::new(label).color(text_color).monospace(),
-                                ),
-                            );
-                            if response.clicked() {
-                                self.selected = Some(idx);
-                            }
-                        }
-                    });
-            });
-    }
-
-    fn show_details(&mut self, ui: &mut Ui) {
+    fn show_archive_browser(&mut self, ui: &mut Ui) {
         CentralPanel::default()
-            .frame(Frame::NONE.fill(BG).inner_margin(Margin::symmetric(24, 20)))
+            .frame(Frame::NONE.fill(WINDOW).inner_margin(Margin::same(8)))
             .show(ui, |ui| {
                 if self.archive_path.is_none() {
                     self.show_welcome_state(ui);
@@ -403,11 +410,8 @@ impl RarustApp {
 
                 if let Some(err) = &self.load_error {
                     error_panel(ui, self.i18n.t(Message::StatusError), err);
-                    ui.add_space(12.0);
-                    if ui
-                        .add(primary_button(self.i18n.t(Message::OpenArchive)))
-                        .clicked()
-                    {
+                    ui.add_space(8.0);
+                    if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
                         self.pick_archive_file();
                     }
                     return;
@@ -418,167 +422,155 @@ impl RarustApp {
                     return;
                 };
 
-                let archive_path = self.archive_path.as_deref().unwrap_or("-").to_owned();
+                let family_label = loaded.family_label.clone();
                 let entry_count = loaded.entries.len();
                 let total_size = loaded.entries.iter().map(|entry| entry.size).sum::<u64>();
-                let family_label = loaded.family_label.clone();
 
                 Frame::NONE
-                    .fill(PANEL)
+                    .fill(CHROME)
                     .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(Margin::symmetric(18, 16))
+                    .inner_margin(Margin::symmetric(8, 5))
                     .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(self.i18n.t(Message::Archive))
-                                .small()
-                                .color(MUTED),
-                        );
-                        ui.add(
-                            Label::new(RichText::new(archive_path).strong().color(TEXT)).truncate(),
-                        );
-                        ui.add_space(12.0);
-                        Grid::new("archive_summary_grid")
-                            .num_columns(3)
-                            .spacing([24.0, 6.0])
-                            .show(ui, |ui| {
-                                metric(ui, self.i18n.t(Message::Format), &family_label);
-                                metric(
-                                    ui,
-                                    self.i18n.t(Message::Entries),
-                                    &format!("{entry_count} {}", self.i18n.t(Message::FilesCount)),
-                                );
-                                metric(
-                                    ui,
-                                    self.i18n.t(Message::Size),
-                                    &util::format_size(total_size),
-                                );
-                                ui.end_row();
-                            });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(self.i18n.t(Message::Format)).strong());
+                            ui.label(family_label);
+                            ui.separator();
+                            ui.label(format!(
+                                "{entry_count} {}",
+                                self.i18n.t(Message::FilesCount)
+                            ));
+                            ui.separator();
+                            ui.label(format!(
+                                "{}: {}",
+                                self.i18n.t(Message::TotalSize),
+                                util::format_size(total_size)
+                            ));
+                        });
                     });
 
-                ui.add_space(16.0);
+                ui.add_space(6.0);
+                self.show_entry_table(ui);
+            });
+    }
 
-                let Some(idx) = self.selected else {
-                    empty_panel(
-                        ui,
-                        self.i18n.t(Message::SelectFile),
-                        self.i18n.t(Message::SelectFileDetail),
-                    );
-                    return;
-                };
-                let Some(entry) = loaded.entries.get(idx) else {
-                    empty_panel(
-                        ui,
-                        self.i18n.t(Message::SelectFile),
-                        self.i18n.t(Message::SelectFileDetail),
-                    );
-                    return;
-                };
+    fn show_entry_table(&mut self, ui: &mut Ui) {
+        let filtered: Vec<(usize, EntryRow)> = self
+            .filtered_entries()
+            .into_iter()
+            .map(|(idx, entry)| {
+                (
+                    idx,
+                    EntryRow {
+                        name: entry.name.clone(),
+                        size: util::format_size(entry.size),
+                        ratio: format_ratio(entry.ratio),
+                        modified: entry
+                            .modified
+                            .map(util::format_dos_time)
+                            .unwrap_or_else(|| "-".to_string()),
+                        crc32: entry
+                            .crc32
+                            .map(|c| format!("{:08X}", c))
+                            .unwrap_or_else(|| "-".to_string()),
+                        method: entry.method.clone(),
+                        attrs: entry_attrs(entry),
+                        is_directory: entry.is_directory,
+                        is_encrypted: entry.is_encrypted,
+                    },
+                )
+            })
+            .collect();
 
-                let selected_entry_name = entry.name.clone();
-                let selected_entry_is_directory = entry.is_directory;
-                let selected_entry_is_encrypted = entry.is_encrypted;
-                let modified = entry
-                    .modified
-                    .map(util::format_dos_time)
-                    .unwrap_or_else(|| "-".to_string());
-                let crc32 = entry
-                    .crc32
-                    .map(|c| format!("{:08X}", c))
-                    .unwrap_or_else(|| "-".to_string());
-                let size = util::format_size(entry.size);
-                let ratio = format_ratio(entry.ratio);
-                let method = entry.method.clone();
-                let directory = if entry.is_directory {
-                    self.i18n.t(Message::Yes)
-                } else {
-                    self.i18n.t(Message::No)
-                };
-                let encrypted = if entry.is_encrypted {
-                    self.i18n.t(Message::Yes)
-                } else {
-                    self.i18n.t(Message::No)
-                };
+        if filtered.is_empty() {
+            empty_panel(
+                ui,
+                self.i18n.t(Message::EmptyArchive),
+                self.i18n.t(Message::SearchPlaceholder),
+            );
+            return;
+        }
 
-                Frame::NONE
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(Margin::symmetric(18, 16))
+        Frame::NONE
+            .fill(LIST_BG)
+            .stroke(Stroke::new(1.0, BORDER))
+            .show(ui, |ui| {
+                Grid::new("entry_table_header")
+                    .num_columns(7)
+                    .spacing([12.0, 0.0])
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(self.i18n.t(Message::Name))
-                                    .small()
-                                    .color(MUTED),
-                            );
-                            if selected_entry_is_directory {
-                                status_pill(ui, self.i18n.t(Message::Directory), WARNING);
-                            }
-                            if selected_entry_is_encrypted {
-                                status_pill(ui, self.i18n.t(Message::Encrypted), ACCENT);
-                            }
-                        });
-                        ui.add(
-                            Label::new(
-                                RichText::new(&selected_entry_name)
-                                    .heading()
-                                    .strong()
-                                    .color(TEXT),
-                            )
-                            .truncate(),
-                        );
-                        ui.add_space(16.0);
+                        table_header(ui, self.i18n.t(Message::Name), 320.0);
+                        table_header(ui, self.i18n.t(Message::Size), 92.0);
+                        table_header(ui, self.i18n.t(Message::Ratio), 72.0);
+                        table_header(ui, self.i18n.t(Message::Modified), 142.0);
+                        table_header(ui, self.i18n.t(Message::Crc32), 92.0);
+                        table_header(ui, self.i18n.t(Message::Method), 108.0);
+                        table_header(ui, "Attr", 60.0);
+                        ui.end_row();
+                    });
 
-                        Grid::new("selected_entry_details")
-                            .num_columns(2)
-                            .spacing([24.0, 10.0])
-                            .striped(true)
+                ScrollArea::vertical()
+                    .id_salt("classic_archive_entry_table")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        Grid::new("entry_table_rows")
+                            .num_columns(7)
+                            .spacing([12.0, 0.0])
+                            .striped(false)
                             .show(ui, |ui| {
-                                detail_row(ui, self.i18n.t(Message::Size), &size);
-                                detail_row(ui, self.i18n.t(Message::Ratio), &ratio);
-                                detail_row(ui, self.i18n.t(Message::Modified), &modified);
-                                detail_row(ui, self.i18n.t(Message::Crc32), &crc32);
-                                detail_row(ui, self.i18n.t(Message::Method), &method);
-                                detail_row(ui, self.i18n.t(Message::Directory), directory);
-                                detail_row(ui, self.i18n.t(Message::Encrypted), encrypted);
+                                for (row, (idx, entry)) in filtered.iter().enumerate() {
+                                    self.entry_row(ui, *idx, entry, row);
+                                }
                             });
-
-                        ui.add_space(18.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_sized(
-                                    [128.0, 36.0],
-                                    primary_button(self.i18n.t(Message::Extract)),
-                                )
-                                .clicked()
-                            {
-                                self.extract_selected(
-                                    selected_entry_name.clone(),
-                                    selected_entry_is_directory,
-                                );
-                            }
-                            if ui
-                                .add_sized(
-                                    [112.0, 36.0],
-                                    secondary_button(self.i18n.t(Message::Test)),
-                                )
-                                .clicked()
-                            {
-                                self.test_archive();
-                            }
-                        });
                     });
             });
     }
 
+    fn entry_row(&mut self, ui: &mut Ui, idx: usize, entry: &EntryRow, row: usize) {
+        let selected = self.selected == Some(idx);
+        let fill = if selected {
+            SELECTED
+        } else if row % 2 == 0 {
+            LIST_BG
+        } else {
+            ROW_ALT
+        };
+        let name = if entry.is_directory {
+            format!("[DIR] {}", entry.name)
+        } else {
+            entry.name.clone()
+        };
+        let name_color = if entry.is_directory { ACCENT } else { TEXT };
+
+        Frame::NONE
+            .fill(fill)
+            .inner_margin(Margin::symmetric(4, 1))
+            .show(ui, |ui| {
+                if ui
+                    .add_sized(
+                        [320.0, 22.0],
+                        Button::selectable(selected, RichText::new(name).color(name_color))
+                            .frame(false),
+                    )
+                    .clicked()
+                {
+                    self.selected = Some(idx);
+                }
+            });
+        table_cell(ui, &entry.size, 92.0, true);
+        table_cell(ui, &entry.ratio, 72.0, true);
+        table_cell(ui, &entry.modified, 142.0, false);
+        table_cell(ui, &entry.crc32, 92.0, false);
+        table_cell(ui, &entry.method, 108.0, false);
+        let attrs_color = if entry.is_encrypted { WARNING } else { MUTED };
+        table_cell_colored(ui, &entry.attrs, 60.0, attrs_color, false);
+        ui.end_row();
+    }
+
     fn show_welcome_state(&mut self, ui: &mut Ui) {
         Frame::NONE
-            .fill(PANEL)
+            .fill(LIST_BG)
             .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(CornerRadius::same(8))
-            .inner_margin(Margin::symmetric(28, 24))
+            .inner_margin(Margin::symmetric(18, 16))
             .show(ui, |ui| {
                 ui.label(
                     RichText::new(self.i18n.t(Message::Welcome))
@@ -588,29 +580,34 @@ impl RarustApp {
                 );
                 ui.add_space(8.0);
                 ui.label(RichText::new(self.i18n.t(Message::WelcomeDetail)).color(MUTED));
-                ui.add_space(18.0);
-                if ui
-                    .add_sized(
-                        [160.0, 38.0],
-                        primary_button(self.i18n.t(Message::OpenArchive)),
-                    )
-                    .clicked()
-                {
+                ui.add_space(14.0);
+                if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
                     self.pick_archive_file();
                 }
             });
     }
 
     fn show_status_bar(&self, ui: &mut Ui) {
-        Panel::bottom("status_bar")
+        Panel::bottom("classic_status_bar")
             .frame(
                 Frame::NONE
-                    .fill(PANEL)
-                    .inner_margin(Margin::symmetric(14, 8)),
+                    .fill(CHROME)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    status_pill(ui, &self.status, status_color(&self.status, &self.i18n));
+                    ui.colored_label(status_color(&self.status, &self.i18n), &self.status);
+                    if let Some(entry) = self.selected_entry() {
+                        ui.separator();
+                        ui.label(format!(
+                            "{}: {}",
+                            self.i18n.t(Message::Name),
+                            truncate_middle(&entry.name, 72)
+                        ));
+                        ui.separator();
+                        ui.label(util::format_size(entry.size));
+                    }
                     if let Some(source) = &self.font_setup.cjk_source {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(RichText::new(format!("Font: {source}")).weak().small());
@@ -621,6 +618,18 @@ impl RarustApp {
     }
 }
 
+struct EntryRow {
+    name: String,
+    size: String,
+    ratio: String,
+    modified: String,
+    crc32: String,
+    method: String,
+    attrs: String,
+    is_directory: bool,
+    is_encrypted: bool,
+}
+
 impl eframe::App for RarustApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let title = self.i18n.t(Message::AppTitle);
@@ -628,29 +637,30 @@ impl eframe::App for RarustApp {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        self.show_font_warning(ui);
         self.show_menu_bar(ui);
-        self.show_file_list(ui);
-        self.show_details(ui);
+        self.show_toolbar(ui);
+        self.show_path_bar(ui);
+        self.show_font_warning(ui);
+        self.show_archive_browser(ui);
         self.show_status_bar(ui);
     }
 }
 
 fn apply_theme(ctx: &egui::Context) {
-    ctx.set_theme(egui::Theme::Dark);
-    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
-    style.visuals = Visuals::dark();
+    ctx.set_theme(egui::Theme::Light);
+    let mut style = (*ctx.style_of(egui::Theme::Light)).clone();
+    style.visuals = Visuals::light();
     style.visuals.override_text_color = Some(TEXT);
     style.visuals.weak_text_color = Some(MUTED);
-    style.visuals.panel_fill = PANEL;
-    style.visuals.window_fill = BG;
-    style.visuals.faint_bg_color = PANEL_ALT;
-    style.visuals.extreme_bg_color = SURFACE;
-    style.visuals.text_edit_bg_color = Some(Color32::from_rgb(14, 18, 22));
+    style.visuals.panel_fill = CHROME;
+    style.visuals.window_fill = WINDOW;
+    style.visuals.faint_bg_color = ROW_ALT;
+    style.visuals.extreme_bg_color = LIST_BG;
+    style.visuals.text_edit_bg_color = Some(LIST_BG);
     style.visuals.window_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.window_corner_radius = CornerRadius::same(8);
-    style.visuals.menu_corner_radius = CornerRadius::same(6);
-    style.visuals.selection.bg_fill = ACCENT_SOFT;
+    style.visuals.window_corner_radius = CornerRadius::same(2);
+    style.visuals.menu_corner_radius = CornerRadius::same(2);
+    style.visuals.selection.bg_fill = SELECTED;
     style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
     style.visuals.hyperlink_color = ACCENT;
     style.visuals.warn_fg_color = WARNING;
@@ -665,66 +675,121 @@ fn apply_theme(ctx: &egui::Context) {
         &mut style.visuals.widgets.active,
         &mut style.visuals.widgets.open,
     ] {
-        visuals.corner_radius = CornerRadius::same(6);
+        visuals.corner_radius = CornerRadius::same(2);
         visuals.bg_stroke = Stroke::new(1.0, BORDER);
+        visuals.fg_stroke = Stroke::new(1.0, TEXT);
     }
-    style.visuals.widgets.noninteractive.bg_fill = PANEL;
-    style.visuals.widgets.noninteractive.weak_bg_fill = PANEL_ALT;
-    style.visuals.widgets.inactive.bg_fill = SURFACE;
-    style.visuals.widgets.inactive.weak_bg_fill = SURFACE;
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(38, 47, 56);
-    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(38, 47, 56);
+    style.visuals.widgets.noninteractive.bg_fill = CHROME;
+    style.visuals.widgets.noninteractive.weak_bg_fill = CHROME;
+    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(244, 247, 250);
+    style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(244, 247, 250);
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(228, 240, 252);
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(228, 240, 252);
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
-    style.visuals.widgets.active.bg_fill = ACCENT_SOFT;
-    style.visuals.widgets.active.weak_bg_fill = ACCENT_SOFT;
+    style.visuals.widgets.active.bg_fill = SELECTED;
+    style.visuals.widgets.active.weak_bg_fill = SELECTED;
     style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
 
-    style.spacing.item_spacing = Vec2::new(10.0, 8.0);
-    style.spacing.button_padding = Vec2::new(14.0, 8.0);
-    style.spacing.interact_size = Vec2::new(36.0, 32.0);
-    style.spacing.window_margin = Margin::same(16);
-    style.spacing.menu_margin = Margin::symmetric(10, 8);
+    style.spacing.item_spacing = Vec2::new(6.0, 4.0);
+    style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    style.spacing.interact_size = Vec2::new(32.0, 26.0);
+    style.spacing.window_margin = Margin::same(8);
+    style.spacing.menu_margin = Margin::symmetric(8, 6);
 
     style
         .text_styles
-        .insert(TextStyle::Heading, FontId::proportional(22.0));
+        .insert(TextStyle::Heading, FontId::proportional(18.0));
     style
         .text_styles
-        .insert(TextStyle::Body, FontId::proportional(14.0));
+        .insert(TextStyle::Body, FontId::proportional(13.0));
     style
         .text_styles
         .insert(TextStyle::Small, FontId::proportional(12.0));
 
-    ctx.set_style_of(egui::Theme::Dark, style);
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 
-fn primary_button(label: &str) -> Button<'_> {
-    Button::new(RichText::new(label).strong().color(TEXT))
-        .fill(ACCENT_SOFT)
-        .stroke(Stroke::new(1.0, ACCENT))
-        .corner_radius(CornerRadius::same(6))
+fn toolbar_button(label: &str) -> Button<'_> {
+    Button::new(toolbar_label(label)).min_size(Vec2::new(86.0, 38.0))
 }
 
-fn secondary_button(label: &str) -> Button<'_> {
-    Button::new(RichText::new(label).color(TEXT))
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(6))
+fn toolbar_label(label: &str) -> RichText {
+    RichText::new(label).strong().color(TEXT)
 }
 
-fn status_pill(ui: &mut Ui, text: &str, color: Color32) {
+fn archive_path_field(ui: &mut Ui, path: &str) {
     Frame::NONE
-        .fill(Color32::from_rgba_premultiplied(
-            color.r(),
-            color.g(),
-            color.b(),
-            44,
-        ))
-        .stroke(Stroke::new(1.0, color))
-        .corner_radius(CornerRadius::same(128))
-        .inner_margin(Margin::symmetric(8, 3))
+        .fill(LIST_BG)
+        .stroke(Stroke::new(1.0, BORDER))
+        .inner_margin(Margin::symmetric(6, 3))
         .show(ui, |ui| {
-            ui.label(RichText::new(text).small().strong().color(TEXT));
+            ui.set_min_width(420.0);
+            ui.add(Label::new(RichText::new(path).monospace().color(TEXT)).truncate());
+        });
+}
+
+fn table_header(ui: &mut Ui, text: &str, width: f32) {
+    Frame::NONE
+        .fill(HEADER_BG)
+        .stroke(Stroke::new(1.0, BORDER))
+        .inner_margin(Margin::symmetric(5, 3))
+        .show(ui, |ui| {
+            ui.set_min_width(width);
+            ui.label(RichText::new(text).strong().color(TEXT));
+        });
+}
+
+fn table_cell(ui: &mut Ui, text: &str, width: f32, right_aligned: bool) {
+    table_cell_colored(ui, text, width, TEXT, right_aligned);
+}
+
+fn table_cell_colored(ui: &mut Ui, text: &str, width: f32, color: Color32, right_aligned: bool) {
+    Frame::NONE
+        .inner_margin(Margin::symmetric(4, 1))
+        .show(ui, |ui| {
+            ui.set_min_width(width);
+            if right_aligned {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(Label::new(RichText::new(text).color(color)).truncate());
+                });
+            } else {
+                ui.add(Label::new(RichText::new(text).color(color)).truncate());
+            }
+        });
+}
+
+fn error_panel(ui: &mut Ui, title: &str, detail: &str) {
+    Frame::NONE
+        .fill(Color32::from_rgb(255, 236, 233))
+        .stroke(Stroke::new(1.0, DANGER))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.label(RichText::new(title).strong().color(DANGER));
+            ui.add_space(4.0);
+            ui.label(RichText::new(detail).color(TEXT));
+        });
+}
+
+fn empty_panel(ui: &mut Ui, title: &str, detail: &str) {
+    Frame::NONE
+        .fill(LIST_BG)
+        .stroke(Stroke::new(1.0, BORDER))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.label(RichText::new(title).strong().color(TEXT));
+            ui.add_space(4.0);
+            ui.label(RichText::new(detail).color(MUTED));
+        });
+}
+
+fn loading_panel(ui: &mut Ui, text: &str) {
+    Frame::NONE
+        .fill(LIST_BG)
+        .stroke(Stroke::new(1.0, BORDER))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.spinner();
+            ui.label(RichText::new(text).color(MUTED));
         });
 }
 
@@ -740,70 +805,37 @@ fn status_color(status: &str, i18n: &I18n) -> Color32 {
     }
 }
 
-fn empty_panel(ui: &mut Ui, title: &str, detail: &str) {
-    Frame::NONE
-        .fill(PANEL)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(16, 14))
-        .show(ui, |ui| {
-            ui.label(RichText::new(title).strong().color(TEXT));
-            ui.add_space(4.0);
-            ui.label(RichText::new(detail).small().color(MUTED));
-        });
+fn entry_attrs(entry: &Entry) -> String {
+    let mut attrs = String::new();
+    if entry.is_directory {
+        attrs.push('D');
+    }
+    if entry.is_encrypted {
+        attrs.push('E');
+    }
+    if attrs.is_empty() {
+        attrs.push('-');
+    }
+    attrs
 }
 
-fn error_panel(ui: &mut Ui, title: &str, detail: &str) {
-    Frame::NONE
-        .fill(Color32::from_rgb(45, 26, 26))
-        .stroke(Stroke::new(1.0, DANGER))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(16, 14))
-        .show(ui, |ui| {
-            ui.label(RichText::new(title).strong().color(TEXT));
-            ui.add_space(4.0);
-            ui.label(RichText::new(detail).color(Color32::from_rgb(255, 205, 201)));
-        });
-}
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars || max_chars < 8 {
+        return value.to_owned();
+    }
 
-fn loading_panel(ui: &mut Ui, text: &str) {
-    Frame::NONE
-        .fill(PANEL)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(16, 14))
-        .show(ui, |ui| {
-            ui.spinner();
-            ui.label(RichText::new(text).color(MUTED));
-        });
-}
-
-fn stat_strip(ui: &mut Ui, count: &str, count_label: &str, total_label: &str, total_size: &str) {
-    Frame::NONE
-        .fill(PANEL)
-        .stroke(Stroke::new(1.0, BORDER))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                metric(ui, count_label, count);
-                ui.separator();
-                metric(ui, total_label, total_size);
-            });
-        });
-}
-
-fn metric(ui: &mut Ui, label: &str, value: &str) {
-    ui.vertical(|ui| {
-        ui.label(RichText::new(label).small().color(MUTED));
-        ui.label(RichText::new(value).strong().color(TEXT));
-    });
-}
-
-fn detail_row(ui: &mut Ui, label: &str, value: &str) {
-    ui.label(RichText::new(label).small().color(MUTED));
-    ui.add(Label::new(RichText::new(value).color(TEXT)).truncate());
-    ui.end_row();
+    let keep = (max_chars - 3) / 2;
+    let start: String = value.chars().take(keep).collect();
+    let end: String = value
+        .chars()
+        .rev()
+        .take(max_chars - 3 - keep)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{start}...{end}")
 }
 
 fn format_ratio(ratio: f64) -> String {
@@ -826,8 +858,8 @@ pub fn run_gui(
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1040.0, 700.0])
-            .with_min_inner_size([720.0, 520.0]),
+            .with_inner_size([1120.0, 720.0])
+            .with_min_inner_size([820.0, 560.0]),
         ..Default::default()
     };
 
