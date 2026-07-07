@@ -30,11 +30,14 @@ dunce = "1.0"
 # Optional
 rayon = { version = "1.10", optional = true }
 ratatui = { version = "0.30", optional = true, features = ["crossterm"] }
+eframe = { version = "0.35", optional = true, default-features = true }
+egui = { version = "0.35", optional = true }
 
 [features]
 default = ["parallel"]
 parallel = ["rayon"]
 tui = ["ratatui"]
+gui = ["eframe", "egui"]
 
 [dev-dependencies]
 rars = "0.4"

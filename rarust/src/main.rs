@@ -10,6 +10,8 @@ use clap::Parser;
 
 mod cli;
 mod commands;
+#[cfg(feature = "gui")]
+mod gui;
 
 use cli::{Cli, Commands};
 use rarust_core::error::Result;
@@ -42,5 +44,13 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Tui(_args) => Err(rarust_core::error::RarustError::Unsupported(
             "TUI mode requires the `tui` feature".to_string(),
         )),
+        #[cfg(feature = "gui")]
+        Commands::Gui(args) => {
+            let locale = args
+                .lang
+                .as_deref()
+                .and_then(|s| s.parse().ok());
+            gui::run_gui(&args.archive, locale, args.password.clone())
+        }
     }
 }

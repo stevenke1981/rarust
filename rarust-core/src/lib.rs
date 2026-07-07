@@ -45,4 +45,5 @@ pub mod multi;
 pub mod util;
 
 // Re-export key types from rars for CLI convenience.
+pub use archive::ArchiveFormat;
 pub use rars::ArchiveFamily;

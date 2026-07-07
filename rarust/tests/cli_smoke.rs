@@ -93,6 +93,68 @@ fn cli_extract_include_filter_smoke() {
 }
 
 #[test]
+fn cli_create_header_encrypt_requires_password_to_open() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let input = tmp.path().join("hidden.txt");
+    fs::write(&input, b"header encrypted payload\n").expect("write input");
+
+    let archive = tmp.path().join("hp.rar");
+    let create = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("--no-progress")
+        .arg("create")
+        .arg(&archive)
+        .arg(&input)
+        .arg("--method")
+        .arg("store")
+        .arg("-p")
+        .arg("hpw")
+        .arg("--header-encrypt")
+        .arg("-f")
+        .output()
+        .expect("run rarust create");
+
+    assert!(
+        create.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    assert!(archive.exists(), "archive should be created");
+
+    let list_no_pwd = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("--no-progress")
+        .arg("list")
+        .arg(&archive)
+        .output()
+        .expect("run rarust list without password");
+
+    assert!(
+        !list_no_pwd.status.success(),
+        "listing header-encrypted archive without password should fail"
+    );
+
+    let out_dir = tmp.path().join("out");
+    let extract = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("--no-progress")
+        .arg("extract")
+        .arg(&archive)
+        .arg(&out_dir)
+        .arg("--password")
+        .arg("hpw")
+        .output()
+        .expect("run rarust extract");
+
+    assert!(
+        extract.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir.join("hidden.txt")).expect("read extracted file"),
+        "header encrypted payload\n"
+    );
+}
+
+#[test]
 fn cli_create_extract_roundtrip() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let input = tmp.path().join("hello.txt");

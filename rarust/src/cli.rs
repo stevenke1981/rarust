@@ -56,17 +56,15 @@ pub enum Commands {
     /// Interactive archive browser (TUI mode).
     #[cfg(feature = "tui")]
     Tui(TuiArgs),
+
+    /// Graphical archive browser (egui GUI).
+    #[cfg(feature = "gui")]
+    Gui(GuiArgs),
 }
 
 /// Create a RAR archive.
 #[derive(Parser, Debug)]
 pub struct CreateArgs {
-    /// Output archive path.
-    pub archive: String,
-
-    /// Input files/directories to add.
-    pub inputs: Vec<String>,
-
     /// Compression level.
     #[arg(short = 'm', long = "method", default_value = "normal")]
     pub method: CompressionLevel,
@@ -83,8 +81,8 @@ pub struct CreateArgs {
     #[arg(short = 'p', long = "password")]
     pub password: Option<String>,
 
-    /// Encrypt file headers (requires --password).
-    #[arg(long = "header-encrypt")]
+    /// Encrypt file headers / filenames (requires `--password`).
+    #[arg(long = "header-encrypt", alias = "encrypt-filenames")]
     pub header_encrypt: bool,
 
     /// Add recovery record (N = percent of archive size).
@@ -110,6 +108,17 @@ pub struct CreateArgs {
     /// Assume yes for all prompts.
     #[arg(short = 'y', long = "assume-yes")]
     pub assume_yes: bool,
+
+    /// Output archive format (`rar5` or `rar4`).
+    #[arg(long = "format", default_value = "rar5")]
+    pub format: ArchiveFormatArg,
+
+    /// Output archive path.
+    pub archive: String,
+
+    /// Input files/directories to add.
+    #[arg(required = true, num_args = 1..)]
+    pub inputs: Vec<String>,
 }
 
 /// Extract files from a RAR archive.
@@ -231,6 +240,22 @@ pub struct TuiArgs {
     pub archive: String,
 }
 
+/// Graphical archive browser (egui GUI).
+#[cfg(feature = "gui")]
+#[derive(Parser, Debug)]
+pub struct GuiArgs {
+    /// Archive path to open.
+    pub archive: String,
+
+    /// UI language (en, zh-CN, zh-TW). Overrides auto-detection.
+    #[arg(short = 'l', long = "lang")]
+    pub lang: Option<String>,
+
+    /// Password for encrypted archives.
+    #[arg(short = 'p', long = "password")]
+    pub password: Option<String>,
+}
+
 // --- Value enums ---
 
 /// Compression level for create and benchmark.
@@ -269,4 +294,55 @@ pub enum BenchmarkFormat {
     Table,
     Json,
     Markdown,
+}
+
+/// Archive format for the create command.
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ArchiveFormatArg {
+    /// RAR 5.x (default).
+    Rar5,
+    /// RAR 4.x legacy format.
+    Rar4,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn create_args_parse_header_encrypt_after_password_short_flag() {
+        let cli = Cli::parse_from([
+            "rarust",
+            "create",
+            "out.rar",
+            "in.txt",
+            "-p",
+            "hpw",
+            "--header-encrypt",
+            "-f",
+        ]);
+        let Commands::Create(args) = cli.command else {
+            panic!("expected create subcommand");
+        };
+        assert_eq!(args.password.as_deref(), Some("hpw"));
+        assert!(args.header_encrypt);
+    }
+
+    #[test]
+    fn create_args_parse_encrypt_filenames_alias() {
+        let cli = Cli::parse_from([
+            "rarust",
+            "create",
+            "--password",
+            "hpw",
+            "--encrypt-filenames",
+            "out.rar",
+            "in.txt",
+        ]);
+        let Commands::Create(args) = cli.command else {
+            panic!("expected create subcommand");
+        };
+        assert!(args.header_encrypt);
+    }
 }

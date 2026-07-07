@@ -9,10 +9,16 @@ use std::path::{Path, PathBuf};
 
 use crate::entry::Entry;
 use crate::error::{RarustError, Result};
-use rars::rar50::{
-    CompressedEntry, Rar50VolumeWriter, Rar50Writer, StoredEntry, WriterOptions,
+use crate::multi;
+use rars::rar15_40::{
+    self, FileEntry as Rar4FileEntry, StoredEntry as Rar4StoredEntry,
+    WriterOptions as Rar4WriterOptions,
 };
-use rars::{ArchiveVersion, FeatureSet};
+use rars::rar50::{
+    CompressedEntry, EncryptedCompressedEntry, EncryptedStoredEntry, Rar50VolumeWriter,
+    Rar50Writer, StoredEntry, WriterOptions,
+};
+use rars::{ArchiveReadOptions, ArchiveReader, ArchiveVersion, FeatureSet};
 
 /// Options for opening an archive.
 #[derive(Clone, Debug)]
@@ -37,8 +43,10 @@ impl Default for OpenOptions {
 
 /// A parsed RAR archive, ready for listing or extraction.
 pub struct RarArchive {
-    /// The inner `rars::Archive`.
+    /// Primary volume (`part1` / `.rar`) used for listing metadata.
     inner: rars::Archive,
+    /// All volumes when this is a multi-volume set (single element otherwise).
+    volumes: Vec<rars::Archive>,
     /// Path this archive was opened from.
     path: PathBuf,
     /// Password for encrypted archives (stored for extraction).
@@ -48,26 +56,50 @@ pub struct RarArchive {
 impl RarArchive {
     /// Open a RAR archive from a filesystem path.
     ///
-    /// Uses `rars::ArchiveReader::read_path` behind the scenes.
+    /// Automatically detects and opens multi-volume sets (`.partN.rar` or `.r00`).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref().to_owned();
-        let inner = rars::ArchiveReader::read_path(&path)
-            .map_err(RarustError::Rars)?;
-        Ok(RarArchive { inner, path, password: None })
+        Self::open_with_options(path, &OpenOptions::default())
     }
 
     /// Open a RAR archive with custom options (password, etc).
+    ///
+    /// When the path belongs to a multi-volume set, every part must exist on disk.
     pub fn open_with_options(path: impl AsRef<Path>, options: &OpenOptions) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let password = options.password.clone();
-        // Build rars options with borrowed password
-        let rars_opts = match &password {
-            Some(pwd) => rars::ArchiveReadOptions::with_password(pwd.as_bytes()),
-            None => rars::ArchiveReadOptions::default(),
-        };
-        let inner = rars::ArchiveReader::read_path_with_options(&path, rars_opts)
-            .map_err(RarustError::Rars)?;
-        Ok(RarArchive { inner, path, password: password.map(|s| s.into_bytes()) })
+        let volume_paths = multi::detect_volumes(&path);
+        multi::ensure_volumes_exist(&volume_paths)?;
+
+        let rars_opts = read_options_from(password.as_ref().map(|s| s.as_bytes()));
+        let mut volumes = Vec::with_capacity(volume_paths.len());
+        for vol_path in &volume_paths {
+            volumes.push(
+                ArchiveReader::read_path_with_options(vol_path, rars_opts)
+                    .map_err(RarustError::Rars)?,
+            );
+        }
+
+        let inner = volumes
+            .first()
+            .cloned()
+            .ok_or_else(|| RarustError::Corrupt("empty volume set".to_string()))?;
+
+        Ok(RarArchive {
+            inner,
+            volumes,
+            path,
+            password: password.map(|s| s.into_bytes()),
+        })
+    }
+
+    /// Number of volumes in this archive set (1 for a single file).
+    pub fn volume_count(&self) -> usize {
+        self.volumes.len()
+    }
+
+    /// Whether this archive spans multiple volume files.
+    pub fn is_multivolume(&self) -> bool {
+        self.volumes.len() > 1
     }
 
     /// Return the archive family (RAR5, RAR4, etc).
@@ -121,54 +153,50 @@ impl RarArchive {
             .collect();
 
         let dest_base = dest.to_owned();
-        let password = self.password.as_deref();
+        let rars_opts = read_options_from(self.password.as_deref());
 
-        self.inner.extract_to(
-            password,
-            |meta| {
-                let name = String::from_utf8_lossy(meta.name_bytes()).to_string();
-                if !keep_names.contains(&name) {
-                    // Skip this entry
-                    skipped += 1;
-                    return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
+        let mut open_entry = |meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
+            let name = String::from_utf8_lossy(meta.name_bytes()).to_string();
+            if !keep_names.contains(&name) {
+                skipped += 1;
+                return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
+            }
+
+            let entry = Entry::from_extracted_meta(meta);
+            if let Some(target) = entry.safe_extract_path(&dest_base) {
+                if let Some(parent) = target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
-
-                // Build entry from extraction metadata (limited fields)
-                let entry = Entry::from_extracted_meta(meta);
-                if let Some(target) = entry.safe_extract_path(&dest_base) {
-                    if let Some(parent) = target.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    if meta.is_directory {
-                        let _ = std::fs::create_dir_all(&target);
-                        extracted += 1;
-                        Ok(Box::new(std::io::sink()) as Box<dyn Write>)
-                    } else {
-                        match std::fs::File::create(&target) {
-                            Ok(file) => {
-                                extracted += 1;
-                                Ok(Box::new(file) as Box<dyn Write>)
-                            }
-                            Err(e) => {
-                                errors += 1;
-                                Err(rars::error::Error::from(e))
-                            }
+                if meta.is_directory {
+                    let _ = std::fs::create_dir_all(&target);
+                    extracted += 1;
+                    Ok(Box::new(std::io::sink()) as Box<dyn Write>)
+                } else {
+                    match std::fs::File::create(&target) {
+                        Ok(file) => {
+                            extracted += 1;
+                            Ok(Box::new(file) as Box<dyn Write>)
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            Err(rars::error::Error::from(e))
                         }
                     }
-                } else {
-                    // Unsafe path traversal — skip
-                    skipped += 1;
-                    Ok(Box::new(std::io::sink()) as Box<dyn Write>)
                 }
-            },
-        ).map_err(|e| {
-            // Map rars error to our error type
-            if matches!(e, rars::error::Error::WrongPasswordOrCorruptData) {
-                RarustError::WrongPassword
             } else {
-                RarustError::Rars(e)
+                skipped += 1;
+                Ok(Box::new(std::io::sink()) as Box<dyn Write>)
             }
-        })?;
+        };
+
+        let extract_result = if self.is_multivolume() {
+            rars::extract_volumes_to_with_options(&self.volumes, rars_opts, &mut open_entry)
+        } else {
+            self.inner
+                .extract_to_with_options(rars_opts, &mut open_entry)
+        };
+
+        extract_result.map_err(map_rars_extract_error)?;
 
         Ok(ExtractSummary {
             total: total as u64,
@@ -186,18 +214,21 @@ impl RarArchive {
         let entries = self.list()?;
         let total = entries.len() as u64;
         let mut tested = 0u64;
-        let password = self.password.as_deref();
+        let rars_opts = read_options_from(self.password.as_deref());
 
-        self.inner.extract_to(password, |_meta| {
+        let mut count_entry = |_meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
             tested += 1;
             Ok(Box::new(std::io::sink()) as Box<dyn Write>)
-        }).map_err(|e| {
-            if matches!(e, rars::error::Error::WrongPasswordOrCorruptData) {
-                RarustError::WrongPassword
-            } else {
-                RarustError::Rars(e)
-            }
-        })?;
+        };
+
+        let test_result = if self.is_multivolume() {
+            rars::extract_volumes_to_with_options(&self.volumes, rars_opts, &mut count_entry)
+        } else {
+            self.inner
+                .extract_to_with_options(rars_opts, &mut count_entry)
+        };
+
+        test_result.map_err(map_rars_extract_error)?;
 
         Ok(TestSummary {
             total,
@@ -236,11 +267,22 @@ pub struct TestSummary {
     pub failed: u64,
 }
 
+/// Output archive format for creation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArchiveFormat {
+    /// RAR 5.x (default).
+    #[default]
+    Rar5,
+    /// RAR 4.x (legacy, via the RAR 1.5–4.0 writer).
+    Rar4,
+}
+
 /// Builder for creating new RAR archives.
 ///
-/// Wraps the `rars` RAR5 writer (stored / compressed / encrypted / multi-volume).
+/// Wraps the `rars` RAR5 and RAR4 writers (stored / compressed / encrypted / multi-volume).
 pub struct ArchiveBuilder {
     entries: Vec<ArchiveBuilderEntry>,
+    format: ArchiveFormat,
     password: Option<String>,
     method: CompressionMethod,
     solid: bool,
@@ -287,10 +329,11 @@ impl CompressionMethod {
 }
 
 impl ArchiveBuilder {
-    /// Create a new builder with default options.
+    /// Create a new builder with default options (RAR5).
     pub fn new() -> Self {
         ArchiveBuilder {
             entries: Vec::new(),
+            format: ArchiveFormat::Rar5,
             password: None,
             method: CompressionMethod::Normal,
             solid: false,
@@ -298,6 +341,12 @@ impl ArchiveBuilder {
             recovery_percent: None,
             header_encrypt: false,
         }
+    }
+
+    /// Set the output archive format (`Rar5` or `Rar4`).
+    pub fn with_format(mut self, format: ArchiveFormat) -> Self {
+        self.format = format;
+        self
     }
 
     /// Add a file or directory to the archive.
@@ -367,14 +416,6 @@ impl ArchiveBuilder {
     }
 
     /// Build the archive to the given output path.
-    ///
-    /// Uses the `rars` RAR5 writer. Supports store / compressed methods,
-    /// solid archives, recovery records, and multi-volume (`.partN.rar`)
-    /// splitting.
-    ///
-    /// **Note:** Encrypted archive creation is not supported by the rars
-    /// 0.4.1 backend. If a password is set, `build()` returns
-    /// `RarustError::Unsupported`.
     pub fn build(self, dest: impl AsRef<Path>) -> Result<()> {
         let dest = dest.as_ref();
         if self.entries.is_empty() {
@@ -382,76 +423,264 @@ impl ArchiveBuilder {
                 "no input files added to the archive".to_string(),
             ));
         }
-
-        let owned = read_builder_entries(&self.entries)?;
-        let host_os = if cfg!(windows) { 0u64 } else { 1u64 };
-
-        // rars 0.4.1 writer does not support encrypted output at runtime.
-        if self.password.is_some() {
+        if self.header_encrypt && self.password.is_none() {
             return Err(RarustError::Unsupported(
-                "encrypted archive creation is not supported by the rars backend; \
-                 use an unencrypted archive or encrypt the files separately"
-                    .to_string(),
+                "header encryption requires a password".to_string(),
             ));
         }
 
+        match self.format {
+            ArchiveFormat::Rar5 => self.build_rar5(dest),
+            ArchiveFormat::Rar4 => self.build_rar4(dest),
+        }
+    }
+
+    fn build_rar5(self, dest: &Path) -> Result<()> {
+        let owned = read_builder_entries(&self.entries)?;
+        let host_os = if cfg!(windows) { 0u64 } else { 1u64 };
         let is_store = matches!(self.method, CompressionMethod::Store);
+        let encrypted = self.password.is_some();
 
         let mut features = FeatureSet::store_only();
         features.solid = self.solid;
         features.header_encryption = self.header_encrypt;
+        if encrypted {
+            features.file_encryption = true;
+        }
+
         let mut opts = WriterOptions::new(ArchiveVersion::Rar50, features);
         if !is_store {
             opts = opts.with_compression_level(self.method_level());
         }
 
-        // Build entry vectors once; all borrow `owned` data kept alive here.
-        let stored: Vec<StoredEntry> = owned
-            .iter()
-            .map(|(n, d)| StoredEntry {
-                name: n,
-                data: d,
-                mtime: None,
-                attributes: 0x20,
-                host_os,
-            })
-            .collect();
-        let compressed: Vec<CompressedEntry> = owned
-            .iter()
-            .map(|(n, d)| CompressedEntry {
-                name: n,
-                data: d,
-                mtime: None,
-                attributes: 0x20,
-                host_os,
-            })
-            .collect();
+        let pwd = self.password.as_deref();
 
         if let Some(vol_size) = self.volume_size {
             let mut vw = Rar50VolumeWriter::new(opts).max_payload_per_volume(vol_size as usize);
             if let Some(r) = self.recovery_percent {
                 vw = vw.recovery_percent(Some(r as u64));
             }
-            if is_store {
+            let volumes = if encrypted {
+                let password = pwd.expect("password checked above");
+                if is_store {
+                    if owned.len() != 1 {
+                        return Err(RarustError::Unsupported(
+                            "RAR5 encrypted multi-volume currently supports one file per set"
+                                .to_string(),
+                        ));
+                    }
+                    let (n, d) = &owned[0];
+                    vw.encrypted_stored_entry(EncryptedStoredEntry {
+                        name: n,
+                        data: d,
+                        mtime: None,
+                        attributes: 0x20,
+                        host_os,
+                        password: password.as_bytes(),
+                    })
+                    .finish()
+                } else {
+                    let enc: Vec<EncryptedCompressedEntry> = owned
+                        .iter()
+                        .map(|(n, d)| EncryptedCompressedEntry {
+                            name: n,
+                            data: d,
+                            mtime: None,
+                            attributes: 0x20,
+                            host_os,
+                            password: password.as_bytes(),
+                        })
+                        .collect();
+                    vw.encrypted_compressed_entries(&enc).finish()
+                }
+            } else if is_store {
+                let stored: Vec<StoredEntry> = owned
+                    .iter()
+                    .map(|(n, d)| StoredEntry {
+                        name: n,
+                        data: d,
+                        mtime: None,
+                        attributes: 0x20,
+                        host_os,
+                    })
+                    .collect();
                 for e in &stored {
                     vw = vw.stored_entry(*e);
                 }
+                vw.finish()
             } else {
-                vw = vw.compressed_entries(&compressed);
-            }
-            let volumes = vw.finish().map_err(RarustError::Rars)?;
-            write_volume_files(dest, &volumes)?;
-        } else {
-            let mut w = Rar50Writer::new(opts);
-            if let Some(r) = self.recovery_percent {
-                w = w.recovery_percent(Some(r as u64));
-            }
-            let bytes = if is_store {
-                w.stored_entries(&stored).finish()
-            } else {
-                w.compressed_entries(&compressed).finish()
+                let compressed: Vec<CompressedEntry> = owned
+                    .iter()
+                    .map(|(n, d)| CompressedEntry {
+                        name: n,
+                        data: d,
+                        mtime: None,
+                        attributes: 0x20,
+                        host_os,
+                    })
+                    .collect();
+                vw.compressed_entries(&compressed).finish()
             }
             .map_err(RarustError::Rars)?;
+            write_rar5_volume_files(dest, &volumes)?;
+        } else {
+            let bytes = if encrypted {
+                let password = pwd.expect("password checked above");
+                let mut w = Rar50Writer::new(opts);
+                if let Some(r) = self.recovery_percent {
+                    w = w.recovery_percent(Some(r as u64));
+                }
+                if is_store {
+                    let enc: Vec<EncryptedStoredEntry> = owned
+                        .iter()
+                        .map(|(n, d)| EncryptedStoredEntry {
+                            name: n,
+                            data: d,
+                            mtime: None,
+                            attributes: 0x20,
+                            host_os,
+                            password: password.as_bytes(),
+                        })
+                        .collect();
+                    w.encrypted_stored_entries(&enc).finish()
+                } else {
+                    let enc: Vec<EncryptedCompressedEntry> = owned
+                        .iter()
+                        .map(|(n, d)| EncryptedCompressedEntry {
+                            name: n,
+                            data: d,
+                            mtime: None,
+                            attributes: 0x20,
+                            host_os,
+                            password: password.as_bytes(),
+                        })
+                        .collect();
+                    w.encrypted_compressed_entries(&enc).finish()
+                }
+            } else {
+                let mut w = Rar50Writer::new(opts);
+                if let Some(r) = self.recovery_percent {
+                    w = w.recovery_percent(Some(r as u64));
+                }
+                if is_store {
+                    let stored: Vec<StoredEntry> = owned
+                        .iter()
+                        .map(|(n, d)| StoredEntry {
+                            name: n,
+                            data: d,
+                            mtime: None,
+                            attributes: 0x20,
+                            host_os,
+                        })
+                        .collect();
+                    w.stored_entries(&stored).finish()
+                } else {
+                    let compressed: Vec<CompressedEntry> = owned
+                        .iter()
+                        .map(|(n, d)| CompressedEntry {
+                            name: n,
+                            data: d,
+                            mtime: None,
+                            attributes: 0x20,
+                            host_os,
+                        })
+                        .collect();
+                    w.compressed_entries(&compressed).finish()
+                }
+            }
+            .map_err(RarustError::Rars)?;
+            fs::write(dest, bytes).map_err(RarustError::Io)?;
+        }
+
+        Ok(())
+    }
+
+    fn build_rar4(self, dest: &Path) -> Result<()> {
+        let owned = read_builder_entries(&self.entries)?;
+        let host_os: u8 = if cfg!(windows) { 0 } else { 1 };
+        let is_store = matches!(self.method, CompressionMethod::Store);
+        let pwd_bytes = self.password.as_deref().map(str::as_bytes);
+
+        let mut features = FeatureSet::store_only();
+        features.solid = self.solid;
+        features.header_encryption = self.header_encrypt;
+        if pwd_bytes.is_some() {
+            features.file_encryption = true;
+        }
+
+        let mut opts = Rar4WriterOptions::new(ArchiveVersion::Rar40, features);
+        if !is_store {
+            opts = opts.with_compression_level(self.method_level());
+        }
+
+        if let Some(vol_size) = self.volume_size {
+            if owned.len() != 1 {
+                return Err(RarustError::Unsupported(
+                    "RAR4 multi-volume splitting supports exactly one input file".to_string(),
+                ));
+            }
+            let (name, data) = &owned[0];
+            let volumes = if is_store {
+                rar15_40::write_stored_volumes(
+                    Rar4StoredEntry {
+                        name,
+                        data,
+                        file_time: 0,
+                        file_attr: 0x20,
+                        host_os,
+                        password: pwd_bytes,
+                        file_comment: None,
+                    },
+                    opts,
+                    vol_size as usize,
+                )
+            } else {
+                rar15_40::write_compressed_volumes(
+                    Rar4FileEntry {
+                        name,
+                        data,
+                        file_time: 0,
+                        file_attr: 0x20,
+                        host_os,
+                        password: pwd_bytes,
+                        file_comment: None,
+                    },
+                    opts,
+                    vol_size as usize,
+                )
+            }
+            .map_err(RarustError::Rars)?;
+            write_rar4_volume_files(dest, &volumes)?;
+        } else if is_store {
+            let stored: Vec<Rar4StoredEntry> = owned
+                .iter()
+                .map(|(n, d)| Rar4StoredEntry {
+                    name: n,
+                    data: d,
+                    file_time: 0,
+                    file_attr: 0x20,
+                    host_os,
+                    password: pwd_bytes,
+                    file_comment: None,
+                })
+                .collect();
+            let bytes = rar15_40::write_stored_archive(&stored, opts).map_err(RarustError::Rars)?;
+            fs::write(dest, bytes).map_err(RarustError::Io)?;
+        } else {
+            let files: Vec<Rar4FileEntry> = owned
+                .iter()
+                .map(|(n, d)| Rar4FileEntry {
+                    name: n,
+                    data: d,
+                    file_time: 0,
+                    file_attr: 0x20,
+                    host_os,
+                    password: pwd_bytes,
+                    file_comment: None,
+                })
+                .collect();
+            let bytes =
+                rar15_40::write_compressed_archive(&files, opts).map_err(RarustError::Rars)?;
             fs::write(dest, bytes).map_err(RarustError::Io)?;
         }
 
@@ -486,16 +715,50 @@ fn read_builder_entries(entries: &[ArchiveBuilderEntry]) -> Result<Vec<(Vec<u8>,
     Ok(out)
 }
 
-/// Write multi-volume payloads to `dest.part1.rar`, `dest.part2.rar`, ...
-fn write_volume_files(dest: &Path, volumes: &[Vec<u8>]) -> Result<()> {
+fn read_options_from(password: Option<&[u8]>) -> ArchiveReadOptions<'_> {
+    match password {
+        Some(pwd) => ArchiveReadOptions::with_password(pwd),
+        None => ArchiveReadOptions::default(),
+    }
+}
+
+fn map_rars_extract_error(error: rars::error::Error) -> RarustError {
+    if matches!(error, rars::error::Error::WrongPasswordOrCorruptData) {
+        RarustError::WrongPassword
+    } else {
+        RarustError::Rars(error)
+    }
+}
+
+/// Write RAR5 multi-volume payloads to `dest.part1.rar`, `dest.part2.rar`, ...
+fn write_rar5_volume_files(dest: &Path, volumes: &[Vec<u8>]) -> Result<()> {
     let base = dest.to_string_lossy().to_string();
+    let stem = if base.to_ascii_lowercase().ends_with(".rar") {
+        &base[..base.len() - 4]
+    } else {
+        base.as_str()
+    };
     for (i, data) in volumes.iter().enumerate() {
-        let name = if base.to_ascii_lowercase().ends_with(".rar") {
-            format!("{}.part{}.rar", &base[..base.len() - 4], i + 1)
-        } else {
-            format!("{}.part{}.rar", base, i + 1)
-        };
+        let name = format!("{stem}.part{}.rar", i + 1);
         fs::write(&name, data).map_err(RarustError::Io)?;
+    }
+    Ok(())
+}
+
+/// Write RAR4 multi-volume payloads to `dest.rar`, `dest.r00`, `dest.r01`, ...
+fn write_rar4_volume_files(dest: &Path, volumes: &[Vec<u8>]) -> Result<()> {
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let stem = dest
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("archive");
+    for (i, data) in volumes.iter().enumerate() {
+        let name = if i == 0 {
+            format!("{stem}.rar")
+        } else {
+            format!("{stem}.r{:02}", i - 1)
+        };
+        fs::write(parent.join(name), data).map_err(RarustError::Io)?;
     }
     Ok(())
 }

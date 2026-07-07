@@ -9,12 +9,13 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use crate::cli::CreateArgs;
-use rarust_core::archive::{ArchiveBuilder, CompressionMethod};
+use rarust_core::archive::{ArchiveBuilder, ArchiveFormat, CompressionMethod};
 use rarust_core::error::{RarustError, Result};
 
 /// Execute the `create` command.
 pub fn execute(args: &CreateArgs) -> Result<()> {
     let mut builder = ArchiveBuilder::new()
+        .with_format(map_format(&args.format))
         .with_method(map_method(&args.method))
         .solid(args.solid);
 
@@ -81,10 +82,10 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
     }
 
     if args.dry_run {
-        let kind = if args.password.is_some() {
-            "encrypted "
-        } else {
-            ""
+        let kind = match (args.password.is_some(), args.header_encrypt) {
+            (true, true) => "header-encrypted ",
+            (true, false) => "encrypted ",
+            _ => "",
         };
         let vol = args
             .volume
@@ -110,6 +111,14 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
 
     println!("Created {}", args.archive);
     Ok(())
+}
+
+/// Map the CLI archive format to the core `ArchiveFormat`.
+fn map_format(format: &crate::cli::ArchiveFormatArg) -> ArchiveFormat {
+    match format {
+        crate::cli::ArchiveFormatArg::Rar5 => ArchiveFormat::Rar5,
+        crate::cli::ArchiveFormatArg::Rar4 => ArchiveFormat::Rar4,
+    }
 }
 
 /// Map the CLI `CompressionLevel` to the core `CompressionMethod`.
