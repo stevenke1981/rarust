@@ -88,6 +88,9 @@ pub enum Message {
     FilesCount,
     FontWarning,
     FontWarningDetail,
+    OpenArchive,
+    Welcome,
+    WelcomeDetail,
 }
 
 /// Active locale with translation helpers.
@@ -156,6 +159,11 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::En, Message::FontWarningDetail) => {
             "Chinese characters may not display correctly. Install a CJK font or set RARUST_FONT."
         }
+        (Locale::En, Message::OpenArchive) => "Open…",
+        (Locale::En, Message::Welcome) => "Welcome to Rarust",
+        (Locale::En, Message::WelcomeDetail) => {
+            "Open a RAR archive to browse its contents, or drag a .rar file onto this window."
+        }
 
         // --- Simplified Chinese ---
         (Locale::ZhHans, Message::AppTitle) => "Rarust — 归档浏览器",
@@ -187,6 +195,11 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHans, Message::FontWarningDetail) => {
             "中文可能无法正确显示。请安装 CJK 字体或设置 RARUST_FONT 环境变量。"
         }
+        (Locale::ZhHans, Message::OpenArchive) => "打开…",
+        (Locale::ZhHans, Message::Welcome) => "欢迎使用 Rarust",
+        (Locale::ZhHans, Message::WelcomeDetail) => {
+            "打开 RAR 归档以浏览内容，或将 .rar 文件拖放到此窗口。"
+        }
 
         // --- Traditional Chinese ---
         (Locale::ZhHant, Message::AppTitle) => "Rarust — 封存瀏覽器",
@@ -217,6 +230,11 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHant, Message::FontWarning) => "找不到中日韓字型",
         (Locale::ZhHant, Message::FontWarningDetail) => {
             "中文可能無法正確顯示。請安裝 CJK 字型或設定 RARUST_FONT 環境變數。"
+        }
+        (Locale::ZhHant, Message::OpenArchive) => "開啟…",
+        (Locale::ZhHant, Message::Welcome) => "歡迎使用 Rarust",
+        (Locale::ZhHant, Message::WelcomeDetail) => {
+            "開啟 RAR 封存以瀏覽內容，或將 .rar 檔案拖放到此視窗。"
         }
     }
 }
@@ -275,6 +293,9 @@ mod tests {
             Message::FilesCount,
             Message::FontWarning,
             Message::FontWarningDetail,
+            Message::OpenArchive,
+            Message::Welcome,
+            Message::WelcomeDetail,
         ];
 
         for locale in Locale::ALL {

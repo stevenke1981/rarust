@@ -8,3 +8,4 @@ mod fonts;
 mod i18n;
 
 pub use app::run_gui;
+pub use i18n::Locale;

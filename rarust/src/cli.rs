@@ -56,10 +56,6 @@ pub enum Commands {
     /// Interactive archive browser (TUI mode).
     #[cfg(feature = "tui")]
     Tui(TuiArgs),
-
-    /// Graphical archive browser (egui GUI).
-    #[cfg(feature = "gui")]
-    Gui(GuiArgs),
 }
 
 /// Create a RAR archive.
@@ -238,22 +234,6 @@ pub struct BenchmarkArgs {
 pub struct TuiArgs {
     /// Archive path to open.
     pub archive: String,
-}
-
-/// Graphical archive browser (egui GUI).
-#[cfg(feature = "gui")]
-#[derive(Parser, Debug)]
-pub struct GuiArgs {
-    /// Archive path to open.
-    pub archive: String,
-
-    /// UI language (en, zh-CN, zh-TW). Overrides auto-detection.
-    #[arg(short = 'l', long = "lang")]
-    pub lang: Option<String>,
-
-    /// Password for encrypted archives.
-    #[arg(short = 'p', long = "password")]
-    pub password: Option<String>,
 }
 
 // --- Value enums ---

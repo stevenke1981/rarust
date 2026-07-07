@@ -5,6 +5,19 @@ edition.workspace = true
 license.workspace = true
 description = "A modern, pure Rust RAR command-line tool"
 
+[lib]
+name = "rarust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rarust"
+path = "src/main.rs"
+
+[[bin]]
+name = "rarust-gui"
+path = "src/bin/rarust-gui.rs"
+required-features = ["gui"]
+
 [dependencies]
 rarust-core = { path = "../rarust-core" }
 
@@ -32,12 +45,13 @@ rayon = { version = "1.10", optional = true }
 ratatui = { version = "0.30", optional = true, features = ["crossterm"] }
 eframe = { version = "0.35", optional = true, default-features = true }
 egui = { version = "0.35", optional = true }
+rfd = { version = "0.16", optional = true }
 
 [features]
 default = ["parallel", "gui"]
 parallel = ["rayon"]
 tui = ["ratatui"]
-gui = ["eframe", "egui"]
+gui = ["eframe", "egui", "rfd"]
 
 [dev-dependencies]
 rars = "0.4"

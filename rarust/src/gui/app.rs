@@ -12,7 +12,7 @@ use super::i18n::{I18n, Locale, Message};
 
 /// Main egui application for browsing RAR archives.
 pub struct RarustApp {
-    archive_path: String,
+    archive_path: Option<String>,
     i18n: I18n,
     font_setup: FontSetup,
     password: Option<String>,
@@ -21,6 +21,7 @@ pub struct RarustApp {
     archive: Option<LoadedArchive>,
     load_error: Option<String>,
     status: String,
+    pending_file_dialog: bool,
 }
 
 struct LoadedArchive {
@@ -29,16 +30,17 @@ struct LoadedArchive {
 }
 
 impl RarustApp {
-    /// Create a new GUI app for the given archive path.
+    /// Create a new GUI app, optionally bound to an archive path.
     pub fn new(
-        archive_path: impl Into<String>,
+        archive_path: Option<String>,
         locale: Locale,
         font_setup: FontSetup,
         password: Option<String>,
     ) -> Self {
         let i18n = I18n::new(locale);
+        let has_archive = archive_path.is_some();
         let mut app = Self {
-            archive_path: archive_path.into(),
+            archive_path,
             i18n,
             font_setup,
             password,
@@ -46,13 +48,40 @@ impl RarustApp {
             selected: None,
             archive: None,
             load_error: None,
-            status: String::new(),
+            status: if has_archive {
+                String::new()
+            } else {
+                I18n::new(locale).t(Message::StatusReady).to_owned()
+            },
+            pending_file_dialog: !has_archive,
         };
-        app.reload_archive();
+        if has_archive {
+            app.reload_archive();
+        }
         app
     }
 
+    fn pick_archive_file(&mut self) {
+        let dialog = rfd::FileDialog::new().add_filter("RAR archive", &["rar"]);
+        if let Some(path) = dialog.pick_file() {
+            self.open_archive(path.display().to_string());
+        }
+    }
+
+    fn open_archive(&mut self, path: String) {
+        self.archive_path = Some(path);
+        self.reload_archive();
+    }
+
     fn reload_archive(&mut self) {
+        let Some(path) = self.archive_path.as_deref() else {
+            self.archive = None;
+            self.load_error = None;
+            self.selected = None;
+            self.status = self.i18n.t(Message::StatusReady).to_owned();
+            return;
+        };
+
         self.status = self.i18n.t(Message::StatusLoading).to_owned();
         self.load_error = None;
         self.selected = None;
@@ -62,7 +91,7 @@ impl RarustApp {
             ..OpenOptions::default()
         };
 
-        match RarArchive::open_with_options(&self.archive_path, &options) {
+        match RarArchive::open_with_options(path, &options) {
             Ok(archive) => {
                 let family_label = format_family(archive.family());
                 match archive.list() {
@@ -104,6 +133,10 @@ impl RarustApp {
     fn show_menu_bar(&mut self, ui: &mut Ui) {
         Panel::top("menu_bar").show(ui, |ui| {
             MenuBar::new().ui(ui, |ui| {
+                if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
+                    self.pick_archive_file();
+                }
+
                 ui.menu_button(self.i18n.t(Message::Language), |ui| {
                     for locale in Locale::ALL {
                         let selected = self.i18n.locale() == locale;
@@ -149,6 +182,14 @@ impl RarustApp {
                 );
                 ui.separator();
 
+                if self.archive_path.is_none() {
+                    ui.label(self.i18n.t(Message::WelcomeDetail));
+                    if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
+                        self.pick_archive_file();
+                    }
+                    return;
+                }
+
                 if let Some(err) = &self.load_error {
                     ui.colored_label(egui::Color32::RED, err);
                     return;
@@ -185,6 +226,17 @@ impl RarustApp {
 
     fn show_details(&mut self, ui: &mut Ui) {
         CentralPanel::default().show(ui, |ui| {
+            if self.archive_path.is_none() {
+                ui.heading(self.i18n.t(Message::Welcome));
+                ui.add_space(8.0);
+                ui.label(self.i18n.t(Message::WelcomeDetail));
+                ui.add_space(12.0);
+                if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
+                    self.pick_archive_file();
+                }
+                return;
+            }
+
             if let Some(err) = &self.load_error {
                 ui.colored_label(egui::Color32::RED, err);
                 return;
@@ -197,7 +249,7 @@ impl RarustApp {
 
             ui.horizontal(|ui| {
                 ui.label(RichText::new(self.i18n.t(Message::Archive)).strong());
-                ui.label(&self.archive_path);
+                ui.label(self.archive_path.as_deref().unwrap_or("-"));
             });
             ui.horizontal(|ui| {
                 ui.label(RichText::new(self.i18n.t(Message::Format)).strong());
@@ -276,7 +328,7 @@ impl RarustApp {
                     self.status = format!(
                         "{}: {}",
                         self.i18n.t(Message::Test),
-                        self.archive_path
+                        self.archive_path.as_deref().unwrap_or("-")
                     );
                 }
             });
@@ -304,6 +356,11 @@ impl eframe::App for RarustApp {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        if self.pending_file_dialog {
+            self.pending_file_dialog = false;
+            self.pick_archive_file();
+        }
+
         self.show_font_warning(ui);
         self.show_menu_bar(ui);
         self.show_file_list(ui);
@@ -336,9 +393,11 @@ fn format_ratio(ratio: f64) -> String {
     }
 }
 
-/// Launch the native egui window for an archive.
+/// Launch the native egui archive browser.
+///
+/// When `archive_path` is `None`, the GUI opens with a file picker (default).
 pub fn run_gui(
-    archive_path: &str,
+    archive_path: Option<&str>,
     locale: Option<Locale>,
     password: Option<String>,
 ) -> Result<(), RarustError> {
@@ -351,13 +410,13 @@ pub fn run_gui(
         ..Default::default()
     };
 
-    let archive = archive_path.to_owned();
+    let archive = archive_path.map(str::to_owned);
     let pwd = password;
 
     eframe::run_native(
-        "rarust",
+        "rarust-gui",
         native_options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             let font_setup = super::fonts::setup_fonts(&cc.egui_ctx);
             Ok(Box::new(RarustApp::new(archive, locale, font_setup, pwd)))
         }),
