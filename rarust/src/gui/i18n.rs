@@ -76,6 +76,8 @@ pub enum Message {
     Yes,
     No,
     SelectFile,
+    SelectFileDetail,
+    TotalSize,
     SearchPlaceholder,
     Extract,
     Test,
@@ -145,6 +147,10 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::En, Message::Yes) => "Yes",
         (Locale::En, Message::No) => "No",
         (Locale::En, Message::SelectFile) => "Select a file to view details",
+        (Locale::En, Message::SelectFileDetail) => {
+            "Choose an entry from the archive list to inspect metadata and actions."
+        }
+        (Locale::En, Message::TotalSize) => "Total size",
         (Locale::En, Message::SearchPlaceholder) => "Search files…",
         (Locale::En, Message::Extract) => "Extract",
         (Locale::En, Message::Test) => "Test",
@@ -181,6 +187,10 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHans, Message::Yes) => "是",
         (Locale::ZhHans, Message::No) => "否",
         (Locale::ZhHans, Message::SelectFile) => "选择文件以查看详细信息",
+        (Locale::ZhHans, Message::SelectFileDetail) => {
+            "从归档列表中选择项目，以查看元数据和可用操作。"
+        }
+        (Locale::ZhHans, Message::TotalSize) => "总大小",
         (Locale::ZhHans, Message::SearchPlaceholder) => "搜索文件…",
         (Locale::ZhHans, Message::Extract) => "解压",
         (Locale::ZhHans, Message::Test) => "测试",
@@ -217,6 +227,10 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHant, Message::Yes) => "是",
         (Locale::ZhHant, Message::No) => "否",
         (Locale::ZhHant, Message::SelectFile) => "選擇檔案以檢視詳細資訊",
+        (Locale::ZhHant, Message::SelectFileDetail) => {
+            "從封存清單中選擇項目，以檢視中繼資料與可用操作。"
+        }
+        (Locale::ZhHant, Message::TotalSize) => "總大小",
         (Locale::ZhHant, Message::SearchPlaceholder) => "搜尋檔案…",
         (Locale::ZhHant, Message::Extract) => "解壓",
         (Locale::ZhHant, Message::Test) => "測試",
@@ -281,6 +295,8 @@ mod tests {
             Message::Yes,
             Message::No,
             Message::SelectFile,
+            Message::SelectFileDetail,
+            Message::TotalSize,
             Message::SearchPlaceholder,
             Message::Extract,
             Message::Test,
