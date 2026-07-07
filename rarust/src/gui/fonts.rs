@@ -25,10 +25,9 @@ pub fn setup_fonts(ctx: &Context) -> FontSetup {
 
     let (cjk_bytes, cjk_source) = load_cjk_font();
     let cjk_loaded = if let Some(bytes) = cjk_bytes {
-        fonts.font_data.insert(
-            CJK_FONT_KEY.to_owned(),
-            FontData::from_owned(bytes).into(),
-        );
+        fonts
+            .font_data
+            .insert(CJK_FONT_KEY.to_owned(), FontData::from_owned(bytes).into());
         prepend_family(&mut fonts, FontFamily::Proportional, CJK_FONT_KEY);
         prepend_family(&mut fonts, FontFamily::Monospace, CJK_FONT_KEY);
         true
@@ -81,7 +80,7 @@ fn system_cjk_font_paths() -> Vec<&'static Path> {
     #[cfg(windows)]
     {
         vec![
-            Path::new(r"C:\Windows\Fonts\msyh.ttc"),   // Microsoft YaHei
+            Path::new(r"C:\Windows\Fonts\msyh.ttc"), // Microsoft YaHei
             Path::new(r"C:\Windows\Fonts\msyhbd.ttc"),
             Path::new(r"C:\Windows\Fonts\simhei.ttf"), // SimHei
             Path::new(r"C:\Windows\Fonts\simsun.ttc"), // SimSun

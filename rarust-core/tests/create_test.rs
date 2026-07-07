@@ -1,6 +1,8 @@
 use std::fs;
 
-use rarust_core::archive::{ArchiveBuilder, ArchiveFormat, CompressionMethod, OpenOptions, RarArchive};
+use rarust_core::archive::{
+    ArchiveBuilder, ArchiveFormat, CompressionMethod, OpenOptions, RarArchive,
+};
 
 fn temp_file(dir: &std::path::Path, name: &str, content: &[u8]) -> std::path::PathBuf {
     let p = dir.join(name);
@@ -29,7 +31,10 @@ fn create_store_roundtrip() {
     let extract_dir = tmp.path().join("extract");
     let summary = archive.extract_all(&extract_dir).expect("extract");
     assert_eq!(summary.extracted, 2);
-    assert_eq!(fs::read(extract_dir.join("a.txt")).expect("read a"), b"alpha");
+    assert_eq!(
+        fs::read(extract_dir.join("a.txt")).expect("read a"),
+        b"alpha"
+    );
     assert_eq!(
         fs::read(extract_dir.join("b.txt")).expect("read b"),
         b"beta beta"
@@ -103,7 +108,9 @@ fn create_encrypted_roundtrip() {
     .expect("open with password");
 
     let extract_dir = tmp.path().join("extract");
-    let summary = archive.extract_all(&extract_dir).expect("extract encrypted");
+    let summary = archive
+        .extract_all(&extract_dir)
+        .expect("extract encrypted");
     assert_eq!(summary.extracted, 1);
     assert_eq!(
         fs::read(extract_dir.join("secret.txt")).expect("read secret"),
@@ -173,13 +180,18 @@ fn multivolume_read_extract_roundtrip() {
         .build(&out)
         .expect("build volumes");
 
-    let archive = RarArchive::open(&tmp.path().join("mv.part2.rar"))
-        .expect("open from middle volume path");
+    let archive =
+        RarArchive::open(tmp.path().join("mv.part2.rar")).expect("open from middle volume path");
     assert!(archive.is_multivolume());
-    assert!(archive.volume_count() >= 2, "expected multiple volume parts");
+    assert!(
+        archive.volume_count() >= 2,
+        "expected multiple volume parts"
+    );
 
     let extract_dir = tmp.path().join("extract");
-    archive.extract_all(&extract_dir).expect("extract multivolume");
+    archive
+        .extract_all(&extract_dir)
+        .expect("extract multivolume");
     assert_eq!(
         fs::read(extract_dir.join("payload.bin")).expect("read payload"),
         data

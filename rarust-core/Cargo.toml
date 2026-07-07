@@ -32,6 +32,9 @@ regex-lite = "0.1"
 
 # Optional
 rayon = { version = "1.10", optional = true }
+tar = "0.4.46"
+flate2 = "1.1.9"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [features]
 default = ["parallel"]

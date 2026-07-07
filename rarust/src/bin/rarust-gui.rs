@@ -1,5 +1,7 @@
 //! `rarust-gui` — graphical archive browser (egui).
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -9,7 +11,7 @@ use rarust::gui::run_gui;
 #[derive(Parser, Debug)]
 #[command(name = "rarust-gui", version, about, long_about = None)]
 struct GuiCli {
-    /// Archive path to open (optional — opens file picker when omitted).
+    /// Archive path to open.
     archive: Option<String>,
 
     /// UI language (en, zh-CN, zh-TW). Overrides auto-detection.

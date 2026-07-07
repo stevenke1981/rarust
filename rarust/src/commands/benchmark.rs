@@ -9,6 +9,6 @@ use rarust_core::error::{RarustError, Result};
 /// Execute the `benchmark` command.
 pub fn execute(_args: &BenchmarkArgs) -> Result<()> {
     Err(RarustError::Unsupported(
-        "Benchmark is not yet implemented. Planned for post-MVP.".to_string()
+        "Benchmark is not yet implemented. Planned for post-MVP.".to_string(),
     ))
 }

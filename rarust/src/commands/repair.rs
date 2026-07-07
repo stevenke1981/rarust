@@ -10,6 +10,7 @@ use rarust_core::error::{RarustError, Result};
 pub fn execute(_args: &RepairArgs) -> Result<()> {
     Err(RarustError::Unsupported(
         "Archive repair is not yet implemented. \
-         Use WinRAR's repair feature as a workaround.".to_string()
+         Use WinRAR's repair feature as a workaround."
+            .to_string(),
     ))
 }

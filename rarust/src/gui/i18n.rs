@@ -162,7 +162,7 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::En, Message::OpenArchive) => "Open…",
         (Locale::En, Message::Welcome) => "Welcome to Rarust",
         (Locale::En, Message::WelcomeDetail) => {
-            "Open a RAR archive to browse its contents, or drag a .rar file onto this window."
+            "Open a RAR, ZIP, TAR, TAR.GZ, TGZ, or GZ archive to browse its contents."
         }
 
         // --- Simplified Chinese ---
@@ -198,7 +198,7 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHans, Message::OpenArchive) => "打开…",
         (Locale::ZhHans, Message::Welcome) => "欢迎使用 Rarust",
         (Locale::ZhHans, Message::WelcomeDetail) => {
-            "打开 RAR 归档以浏览内容，或将 .rar 文件拖放到此窗口。"
+            "打开 RAR、ZIP、TAR、TAR.GZ、TGZ 或 GZ 归档以浏览内容。"
         }
 
         // --- Traditional Chinese ---
@@ -234,7 +234,7 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHant, Message::OpenArchive) => "開啟…",
         (Locale::ZhHant, Message::Welcome) => "歡迎使用 Rarust",
         (Locale::ZhHant, Message::WelcomeDetail) => {
-            "開啟 RAR 封存以瀏覽內容，或將 .rar 檔案拖放到此視窗。"
+            "開啟 RAR、ZIP、TAR、TAR.GZ、TGZ 或 GZ 封存以瀏覽內容。"
         }
     }
 }
@@ -301,7 +301,10 @@ mod tests {
         for locale in Locale::ALL {
             for key in keys {
                 let text = translate(locale, key);
-                assert!(!text.is_empty(), "missing translation for {locale:?} {key:?}");
+                assert!(
+                    !text.is_empty(),
+                    "missing translation for {locale:?} {key:?}"
+                );
             }
         }
     }

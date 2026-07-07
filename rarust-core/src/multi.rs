@@ -79,7 +79,10 @@ fn detect_r00_rar(path: &Path) -> Option<Vec<PathBuf>> {
         stem
     } else if let Some(stem) = name.strip_suffix(".r00") {
         stem
-    } else if name.len() >= 4 && name.as_bytes()[name.len() - 4] == b'.' && name.ends_with(|c: char| c.is_ascii_digit()) {
+    } else if name.len() >= 4
+        && name.as_bytes()[name.len() - 4] == b'.'
+        && name.ends_with(|c: char| c.is_ascii_digit())
+    {
         // `.r01`, `.r02`, …
         let dot = name.rfind('.')?;
         &name[..dot]

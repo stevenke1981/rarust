@@ -47,7 +47,9 @@ pub enum PasswordSource {
 
 /// Read a password from the `RARUST_PASSWORD` environment variable.
 pub fn password_from_env() -> Option<String> {
-    std::env::var("RARUST_PASSWORD").ok().filter(|s| !s.is_empty())
+    std::env::var("RARUST_PASSWORD")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Read a password from the first line of a file.

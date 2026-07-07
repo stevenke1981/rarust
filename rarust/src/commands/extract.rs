@@ -6,12 +6,14 @@
 use std::path::Path;
 
 use crate::cli::ExtractArgs;
-use rarust_core::archive::{OpenOptions, RarArchive};
+use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::error::Result;
 
 /// Execute the `extract` command.
 pub fn execute(args: &ExtractArgs, json: bool, _no_progress: bool) -> Result<()> {
-    let dest = args.dest.as_deref()
+    let dest = args
+        .dest
+        .as_deref()
         .map(Path::new)
         .unwrap_or_else(|| Path::new("."));
 
@@ -25,7 +27,7 @@ pub fn execute(args: &ExtractArgs, json: bool, _no_progress: bool) -> Result<()>
         return dry_run(&args.archive, dest, args);
     }
 
-    let archive = RarArchive::open_with_options(&args.archive, &options)?;
+    let archive = PortableArchive::open_with_options(&args.archive, &options)?;
     let entries = archive.list()?;
 
     // Apply include/exclude filter to detect empty result early.
@@ -33,8 +35,10 @@ pub fn execute(args: &ExtractArgs, json: bool, _no_progress: bool) -> Result<()>
 
     if matched == 0 {
         if json {
-            println!("{{\"archive\": {}, \"extracted\": 0, \"skipped\": 0}}",
-                serde_json::to_string(&args.archive).unwrap());
+            println!(
+                "{{\"archive\": {}, \"extracted\": 0, \"skipped\": 0}}",
+                serde_json::to_string(&args.archive).unwrap()
+            );
         } else {
             println!("No files matched for extraction.");
         }
@@ -54,7 +58,11 @@ pub fn execute(args: &ExtractArgs, json: bool, _no_progress: bool) -> Result<()>
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        println!("Extracted {} files to {}", summary.extracted, dest.display());
+        println!(
+            "Extracted {} files to {}",
+            summary.extracted,
+            dest.display()
+        );
         if summary.errors > 0 {
             eprintln!("[WARN] {} errors encountered", summary.errors);
         }
@@ -89,17 +97,27 @@ fn dry_run(archive_path: &str, dest: &Path, args: &ExtractArgs) -> Result<()> {
         ..OpenOptions::default()
     };
 
-    let archive = RarArchive::open_with_options(archive_path, &options)?;
+    let archive = PortableArchive::open_with_options(archive_path, &options)?;
     let entries = archive.list()?;
 
-    println!("[Dry Run] Would extract {} files to {}", entries.len(), dest.display());
+    println!(
+        "[Dry Run] Would extract {} files to {}",
+        entries.len(),
+        dest.display()
+    );
     for entry in entries.iter().take(20) {
-        println!("[Dry Run]   {} → {}/{}", entry.name, dest.display(), entry.name);
+        println!(
+            "[Dry Run]   {} → {}/{}",
+            entry.name,
+            dest.display(),
+            entry.name
+        );
     }
     if entries.len() > 20 {
         println!("[Dry Run]   ... and {} more files", entries.len() - 20);
     }
-    println!("[Dry Run] Total: {} files • {}", 
+    println!(
+        "[Dry Run] Total: {} files • {}",
         entries.len(),
         rarust_core::util::format_size(entries.iter().map(|e| e.size).sum::<u64>())
     );

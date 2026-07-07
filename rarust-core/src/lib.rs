@@ -31,9 +31,9 @@
 #![warn(missing_docs)]
 
 // Dependencies intended for future use — silence unused_crate_dependencies lint.
+use dunce as _;
 #[cfg(feature = "parallel")]
 use rayon as _;
-use dunce as _;
 use serde_json as _;
 use walkdir as _;
 

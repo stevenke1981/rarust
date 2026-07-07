@@ -105,8 +105,8 @@ pub struct CreateArgs {
     #[arg(short = 'y', long = "assume-yes")]
     pub assume_yes: bool,
 
-    /// Output archive format (`rar5` or `rar4`).
-    #[arg(long = "format", default_value = "rar5")]
+    /// Output archive format (`auto`, `rar5`, `rar4`, `zip`, `tar`, `tar-gz`, or `gzip`).
+    #[arg(long = "format", default_value = "auto")]
     pub format: ArchiveFormatArg,
 
     /// Output archive path.
@@ -279,10 +279,20 @@ pub enum BenchmarkFormat {
 /// Archive format for the create command.
 #[derive(Clone, Debug, ValueEnum)]
 pub enum ArchiveFormatArg {
+    /// Detect format from the output archive extension.
+    Auto,
     /// RAR 5.x (default).
     Rar5,
     /// RAR 4.x legacy format.
     Rar4,
+    /// ZIP archive.
+    Zip,
+    /// Plain TAR archive.
+    Tar,
+    /// Gzip-compressed TAR archive (`.tar.gz` / `.tgz`).
+    TarGz,
+    /// Single gzip-compressed file (`.gz`).
+    Gzip,
 }
 
 #[cfg(test)]

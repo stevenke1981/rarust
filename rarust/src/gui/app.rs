@@ -1,11 +1,10 @@
 //! egui application state and UI rendering.
 
 use egui::{CentralPanel, MenuBar, Panel, RichText, ScrollArea, Ui};
-use rarust_core::archive::{OpenOptions, RarArchive};
+use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::entry::Entry;
 use rarust_core::error::RarustError;
 use rarust_core::util;
-use rarust_core::ArchiveFamily;
 
 use super::fonts::FontSetup;
 use super::i18n::{I18n, Locale, Message};
@@ -21,7 +20,6 @@ pub struct RarustApp {
     archive: Option<LoadedArchive>,
     load_error: Option<String>,
     status: String,
-    pending_file_dialog: bool,
 }
 
 struct LoadedArchive {
@@ -53,7 +51,6 @@ impl RarustApp {
             } else {
                 I18n::new(locale).t(Message::StatusReady).to_owned()
             },
-            pending_file_dialog: !has_archive,
         };
         if has_archive {
             app.reload_archive();
@@ -62,7 +59,8 @@ impl RarustApp {
     }
 
     fn pick_archive_file(&mut self) {
-        let dialog = rfd::FileDialog::new().add_filter("RAR archive", &["rar"]);
+        let dialog =
+            rfd::FileDialog::new().add_filter("Archive", &["rar", "zip", "tar", "gz", "tgz"]);
         if let Some(path) = dialog.pick_file() {
             self.open_archive(path.display().to_string());
         }
@@ -91,9 +89,9 @@ impl RarustApp {
             ..OpenOptions::default()
         };
 
-        match RarArchive::open_with_options(path, &options) {
+        match PortableArchive::open_with_options(path, &options) {
             Ok(archive) => {
-                let family_label = format_family(archive.family());
+                let family_label = archive.format_name().to_string();
                 match archive.list() {
                     Ok(entries) => {
                         self.archive = Some(LoadedArchive {
@@ -130,6 +128,71 @@ impl RarustApp {
             .collect()
     }
 
+    fn extract_selected(&mut self, entry_name: String, is_directory: bool) {
+        let Some(archive_path) = self.archive_path.clone() else {
+            return;
+        };
+        let Some(dest) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+
+        let options = OpenOptions {
+            password: self.password.clone(),
+            ..OpenOptions::default()
+        };
+        let result =
+            PortableArchive::open_with_options(&archive_path, &options).and_then(|archive| {
+                let prefix = if is_directory && !entry_name.ends_with('/') {
+                    format!("{entry_name}/")
+                } else {
+                    entry_name.clone()
+                };
+                archive.extract_with_filter(&dest, |entry| {
+                    if is_directory {
+                        entry.name == entry_name || entry.name.starts_with(&prefix)
+                    } else {
+                        entry.name == entry_name
+                    }
+                })
+            });
+
+        match result {
+            Ok(summary) => {
+                self.status = format!(
+                    "Extracted {} entries to {}",
+                    summary.extracted,
+                    dest.display()
+                );
+            }
+            Err(error) => {
+                self.status = format!("{}: {}", self.i18n.t(Message::StatusError), error);
+            }
+        }
+    }
+
+    fn test_archive(&mut self) {
+        let Some(archive_path) = self.archive_path.clone() else {
+            return;
+        };
+        let options = OpenOptions {
+            password: self.password.clone(),
+            ..OpenOptions::default()
+        };
+        match PortableArchive::open_with_options(&archive_path, &options)
+            .and_then(|archive| archive.test_all())
+        {
+            Ok(summary) => {
+                self.status = format!(
+                    "Test completed: {} entries OK, {} failed",
+                    summary.tested, summary.failed
+                );
+            }
+            Err(error) => {
+                self.status = format!("{}: {}", self.i18n.t(Message::StatusError), error);
+            }
+        }
+    }
+
     fn show_menu_bar(&mut self, ui: &mut Ui) {
         Panel::top("menu_bar").show(ui, |ui| {
             MenuBar::new().ui(ui, |ui| {
@@ -140,7 +203,10 @@ impl RarustApp {
                 ui.menu_button(self.i18n.t(Message::Language), |ui| {
                     for locale in Locale::ALL {
                         let selected = self.i18n.locale() == locale;
-                        if ui.selectable_label(selected, locale.display_name()).clicked() {
+                        if ui
+                            .selectable_label(selected, locale.display_name())
+                            .clicked()
+                        {
                             self.i18n.set_locale(locale);
                             self.status = self.i18n.t(Message::StatusReady).to_owned();
                             ui.close();
@@ -159,12 +225,14 @@ impl RarustApp {
         if self.font_setup.cjk_loaded || !self.i18n.locale().needs_cjk_font() {
             return;
         }
-        egui::Window::new(self.i18n.t(Message::FontWarning))
-            .collapsible(true)
-            .resizable(false)
-            .show(ui.ctx(), |ui| {
-                ui.label(self.i18n.t(Message::FontWarningDetail));
-            });
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            format!(
+                "{}: {}",
+                self.i18n.t(Message::FontWarning),
+                self.i18n.t(Message::FontWarningDetail)
+            ),
+        );
     }
 
     fn show_file_list(&mut self, ui: &mut Ui) {
@@ -213,14 +281,16 @@ impl RarustApp {
                     return;
                 }
 
-                ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (idx, label) in filtered {
-                        let selected = self.selected == Some(idx);
-                        if ui.selectable_label(selected, label).clicked() {
-                            self.selected = Some(idx);
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (idx, label) in filtered {
+                            let selected = self.selected == Some(idx);
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.selected = Some(idx);
+                            }
                         }
-                    }
-                });
+                    });
             });
     }
 
@@ -271,6 +341,8 @@ impl RarustApp {
                 ui.label(self.i18n.t(Message::SelectFile));
                 return;
             };
+            let selected_entry_name = entry.name.clone();
+            let selected_entry_is_directory = entry.is_directory;
 
             detail_row(ui, self.i18n.t(Message::Name), &entry.name);
             detail_row(
@@ -318,18 +390,10 @@ impl RarustApp {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.button(self.i18n.t(Message::Extract)).clicked() {
-                    self.status = format!(
-                        "{}: {} (CLI: rarust extract …)",
-                        self.i18n.t(Message::Extract),
-                        entry.name
-                    );
+                    self.extract_selected(selected_entry_name.clone(), selected_entry_is_directory);
                 }
                 if ui.button(self.i18n.t(Message::Test)).clicked() {
-                    self.status = format!(
-                        "{}: {}",
-                        self.i18n.t(Message::Test),
-                        self.archive_path.as_deref().unwrap_or("-")
-                    );
+                    self.test_archive();
                 }
             });
         });
@@ -356,11 +420,6 @@ impl eframe::App for RarustApp {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        if self.pending_file_dialog {
-            self.pending_file_dialog = false;
-            self.pick_archive_file();
-        }
-
         self.show_font_warning(ui);
         self.show_menu_bar(ui);
         self.show_file_list(ui);
@@ -374,15 +433,6 @@ fn detail_row(ui: &mut Ui, label: &str, value: &str) {
         ui.label(RichText::new(label).strong());
         ui.label(value);
     });
-}
-
-fn format_family(family: ArchiveFamily) -> String {
-    match family {
-        ArchiveFamily::Rar50Plus => "RAR5".to_string(),
-        ArchiveFamily::Rar15To40 => "RAR4".to_string(),
-        ArchiveFamily::Rar13 => "RAR1.3".to_string(),
-        _ => format!("{family:?}"),
-    }
 }
 
 fn format_ratio(ratio: f64) -> String {

@@ -4,12 +4,15 @@
 //! convenience-focused interface for the CLI layer.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::entry::Entry;
 use crate::error::{RarustError, Result};
 use crate::multi;
+use flate2::Compression as GzipCompression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use rars::rar15_40::{
     self, FileEntry as Rar4FileEntry, StoredEntry as Rar4StoredEntry,
     WriterOptions as Rar4WriterOptions,
@@ -51,6 +54,121 @@ pub struct RarArchive {
     path: PathBuf,
     /// Password for encrypted archives (stored for extraction).
     password: Option<Vec<u8>>,
+}
+
+/// Archive reader that supports RAR plus portable formats such as ZIP and TAR.GZ.
+pub enum PortableArchive {
+    /// RAR archive handled by the `rars` backend.
+    Rar(Box<RarArchive>),
+    /// ZIP archive.
+    Zip {
+        /// Archive path.
+        path: PathBuf,
+    },
+    /// Plain TAR archive.
+    Tar {
+        /// Archive path.
+        path: PathBuf,
+    },
+    /// Gzip-compressed TAR archive (`.tar.gz` / `.tgz`).
+    TarGz {
+        /// Archive path.
+        path: PathBuf,
+    },
+    /// Single gzip-compressed file (`.gz`).
+    Gzip {
+        /// Archive path.
+        path: PathBuf,
+    },
+}
+
+impl PortableArchive {
+    /// Open an archive, detecting the format from the file extension.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_options(path, &OpenOptions::default())
+    }
+
+    /// Open an archive with custom RAR options.
+    pub fn open_with_options(path: impl AsRef<Path>, options: &OpenOptions) -> Result<Self> {
+        let path = path.as_ref().to_owned();
+        match detect_format_from_path(&path)? {
+            ArchiveFormat::Rar5 | ArchiveFormat::Rar4 => Ok(Self::Rar(Box::new(
+                RarArchive::open_with_options(path, options)?,
+            ))),
+            ArchiveFormat::Zip => Ok(Self::Zip { path }),
+            ArchiveFormat::Tar => Ok(Self::Tar { path }),
+            ArchiveFormat::TarGz => Ok(Self::TarGz { path }),
+            ArchiveFormat::Gzip => Ok(Self::Gzip { path }),
+        }
+    }
+
+    /// Display name for the detected archive format.
+    pub fn format_name(&self) -> &'static str {
+        match self {
+            Self::Rar(archive) => match archive.family() {
+                rars::ArchiveFamily::Rar13 => "RAR 1.3/1.4",
+                rars::ArchiveFamily::Rar15To40 => "RAR 1.5-4.0",
+                rars::ArchiveFamily::Rar50Plus => "RAR 5.0+",
+                _ => "RAR",
+            },
+            Self::Zip { .. } => "ZIP",
+            Self::Tar { .. } => "TAR",
+            Self::TarGz { .. } => "TAR.GZ",
+            Self::Gzip { .. } => "GZ",
+        }
+    }
+
+    /// List all entries in the archive.
+    pub fn list(&self) -> Result<Vec<Entry>> {
+        match self {
+            Self::Rar(archive) => archive.list(),
+            Self::Zip { path } => list_zip(path),
+            Self::Tar { path } => list_tar(fs::File::open(path).map_err(RarustError::Io)?, "tar"),
+            Self::TarGz { path } => list_tar(
+                GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?),
+                "gzip",
+            ),
+            Self::Gzip { path } => list_gzip(path),
+        }
+    }
+
+    /// Extract all entries to the destination directory.
+    pub fn extract_all(&self, dest: &Path) -> Result<ExtractSummary> {
+        self.extract_with_filter(dest, |_| true)
+    }
+
+    /// Extract entries matching a predicate to the destination directory.
+    pub fn extract_with_filter<F>(&self, dest: &Path, filter: F) -> Result<ExtractSummary>
+    where
+        F: Fn(&Entry) -> bool,
+    {
+        match self {
+            Self::Rar(archive) => archive.extract_with_filter(dest, filter),
+            Self::Zip { path } => extract_zip(path, dest, filter),
+            Self::Tar { path } => {
+                extract_tar(fs::File::open(path).map_err(RarustError::Io)?, dest, filter)
+            }
+            Self::TarGz { path } => extract_tar(
+                GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?),
+                dest,
+                filter,
+            ),
+            Self::Gzip { path } => extract_gzip(path, dest, filter),
+        }
+    }
+
+    /// Test archive integrity by streaming extractable file contents to a sink.
+    pub fn test_all(&self) -> Result<TestSummary> {
+        match self {
+            Self::Rar(archive) => archive.test_all(),
+            Self::Zip { path } => test_zip(path),
+            Self::Tar { path } => test_tar(fs::File::open(path).map_err(RarustError::Io)?),
+            Self::TarGz { path } => test_tar(GzDecoder::new(
+                fs::File::open(path).map_err(RarustError::Io)?,
+            )),
+            Self::Gzip { path } => test_gzip(path),
+        }
+    }
 }
 
 impl RarArchive {
@@ -114,7 +232,8 @@ impl RarArchive {
 
     /// List all entries in the archive.
     pub fn list(&self) -> Result<Vec<Entry>> {
-        let entries: Vec<Entry> = self.inner
+        let entries: Vec<Entry> = self
+            .inner
             .members()
             .map(|m| Entry::from_rars_meta(&m.meta))
             .collect();
@@ -139,18 +258,15 @@ impl RarArchive {
         let total = filtered.len();
 
         // Create destination directory
-        std::fs::create_dir_all(dest)
-            .map_err(RarustError::Io)?;
+        std::fs::create_dir_all(dest).map_err(RarustError::Io)?;
 
         let mut extracted = 0u64;
         let mut skipped = 0u64;
         let mut errors = 0u64;
 
         // Collect member names we want to keep for the extraction callback
-        let keep_names: std::collections::HashSet<String> = filtered
-            .iter()
-            .map(|e| e.name.clone())
-            .collect();
+        let keep_names: std::collections::HashSet<String> =
+            filtered.iter().map(|e| e.name.clone()).collect();
 
         let dest_base = dest.to_owned();
         let rars_opts = read_options_from(self.password.as_deref());
@@ -275,6 +391,21 @@ pub enum ArchiveFormat {
     Rar5,
     /// RAR 4.x (legacy, via the RAR 1.5–4.0 writer).
     Rar4,
+    /// ZIP archive.
+    Zip,
+    /// Plain TAR archive.
+    Tar,
+    /// Gzip-compressed TAR archive (`.tar.gz` / `.tgz`).
+    TarGz,
+    /// Single gzip-compressed file (`.gz`).
+    Gzip,
+}
+
+impl ArchiveFormat {
+    /// Detect an archive format from a filesystem path.
+    pub fn from_path(path: &Path) -> Result<Self> {
+        detect_format_from_path(path)
+    }
 }
 
 /// Builder for creating new RAR archives.
@@ -432,6 +563,10 @@ impl ArchiveBuilder {
         match self.format {
             ArchiveFormat::Rar5 => self.build_rar5(dest),
             ArchiveFormat::Rar4 => self.build_rar4(dest),
+            ArchiveFormat::Zip => self.build_zip(dest),
+            ArchiveFormat::Tar => self.build_tar(dest),
+            ArchiveFormat::TarGz => self.build_tar_gz(dest),
+            ArchiveFormat::Gzip => self.build_gzip(dest),
         }
     }
 
@@ -686,6 +821,98 @@ impl ArchiveBuilder {
 
         Ok(())
     }
+
+    fn build_zip(self, dest: &Path) -> Result<()> {
+        self.ensure_portable_options("ZIP")?;
+        let owned = read_builder_entries(&self.entries)?;
+        let file = fs::File::create(dest).map_err(RarustError::Io)?;
+        let mut writer = zip::ZipWriter::new(file);
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(zip_method(&self.method));
+
+        for (name, data) in owned {
+            let name = normalized_archive_name(&name)?;
+            writer
+                .start_file(name, options)
+                .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+            writer.write_all(&data).map_err(RarustError::Io)?;
+        }
+        writer
+            .finish()
+            .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+        Ok(())
+    }
+
+    fn build_tar(self, dest: &Path) -> Result<()> {
+        self.ensure_portable_options("TAR")?;
+        let file = fs::File::create(dest).map_err(RarustError::Io)?;
+        write_tar(file, &self.entries)
+    }
+
+    fn build_tar_gz(self, dest: &Path) -> Result<()> {
+        self.ensure_portable_options("TAR.GZ")?;
+        let file = fs::File::create(dest).map_err(RarustError::Io)?;
+        let encoder = GzEncoder::new(file, gzip_level(&self.method));
+        write_tar(encoder, &self.entries)
+    }
+
+    fn build_gzip(self, dest: &Path) -> Result<()> {
+        self.ensure_portable_options("GZ")?;
+        if self.entries.len() != 1 {
+            return Err(RarustError::Unsupported(
+                "GZ output supports exactly one input file; use tar.gz for multiple files"
+                    .to_string(),
+            ));
+        }
+        let entry = &self.entries[0];
+        let name = entry
+            .archive_name
+            .clone()
+            .or_else(|| {
+                entry
+                    .source
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .ok_or_else(|| RarustError::Unsupported("entry has no usable name".to_string()))?;
+        let mut encoder = flate2::GzBuilder::new().filename(name).write(
+            fs::File::create(dest).map_err(RarustError::Io)?,
+            gzip_level(&self.method),
+        );
+        let mut input = fs::File::open(&entry.source).map_err(RarustError::Io)?;
+        std::io::copy(&mut input, &mut encoder).map_err(RarustError::Io)?;
+        encoder.finish().map_err(RarustError::Io)?;
+        Ok(())
+    }
+
+    fn ensure_portable_options(&self, format: &str) -> Result<()> {
+        if self.password.is_some() {
+            return Err(RarustError::Unsupported(format!(
+                "{format} creation does not support encryption"
+            )));
+        }
+        if self.header_encrypt {
+            return Err(RarustError::Unsupported(format!(
+                "{format} creation does not support header encryption"
+            )));
+        }
+        if self.volume_size.is_some() {
+            return Err(RarustError::Unsupported(format!(
+                "{format} creation does not support multi-volume splitting"
+            )));
+        }
+        if self.recovery_percent.is_some() {
+            return Err(RarustError::Unsupported(format!(
+                "{format} creation does not support recovery records"
+            )));
+        }
+        if self.solid {
+            return Err(RarustError::Unsupported(format!(
+                "{format} creation does not support solid compression"
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl Default for ArchiveBuilder {
@@ -707,9 +934,7 @@ fn read_builder_entries(entries: &[ArchiveBuilderEntry]) -> Result<Vec<(Vec<u8>,
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
             })
-            .ok_or_else(|| {
-                RarustError::Unsupported("entry has no usable name".to_string())
-            })?;
+            .ok_or_else(|| RarustError::Unsupported("entry has no usable name".to_string()))?;
         out.push((name.into_bytes(), data));
     }
     Ok(out)
@@ -720,6 +945,396 @@ fn read_options_from(password: Option<&[u8]>) -> ArchiveReadOptions<'_> {
         Some(pwd) => ArchiveReadOptions::with_password(pwd),
         None => ArchiveReadOptions::default(),
     }
+}
+
+fn detect_format_from_path(path: &Path) -> Result<ArchiveFormat> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        Ok(ArchiveFormat::TarGz)
+    } else if ext == "zip" {
+        Ok(ArchiveFormat::Zip)
+    } else if ext == "tar" {
+        Ok(ArchiveFormat::Tar)
+    } else if ext == "gz" {
+        Ok(ArchiveFormat::Gzip)
+    } else if ext == "rar"
+        || (ext.len() == 3 && ext.starts_with('r') && ext[1..].chars().all(|c| c.is_ascii_digit()))
+    {
+        Ok(ArchiveFormat::Rar5)
+    } else {
+        Err(RarustError::Unsupported(format!(
+            "unsupported archive extension for {}",
+            path.display()
+        )))
+    }
+}
+
+fn list_zip(path: &Path) -> Result<Vec<Entry>> {
+    let file = fs::File::open(path).map_err(RarustError::Io)?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+    let mut entries = Vec::with_capacity(archive.len());
+
+    for i in 0..archive.len() {
+        let file = archive
+            .by_index(i)
+            .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+        entries.push(generic_entry(
+            file.name(),
+            file.size(),
+            file.compressed_size(),
+            file.is_dir(),
+            false,
+            file.compression().to_string().as_str(),
+            Some(file.crc32()),
+        ));
+    }
+
+    Ok(entries)
+}
+
+fn extract_zip<F>(path: &Path, dest: &Path, filter: F) -> Result<ExtractSummary>
+where
+    F: Fn(&Entry) -> bool,
+{
+    fs::create_dir_all(dest).map_err(RarustError::Io)?;
+    let file = fs::File::open(path).map_err(RarustError::Io)?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+    let total = archive.len() as u64;
+    let mut extracted = 0u64;
+    let mut skipped = 0u64;
+    let errors = 0u64;
+
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+        let entry = generic_entry(
+            file.name(),
+            file.size(),
+            file.compressed_size(),
+            file.is_dir(),
+            false,
+            file.compression().to_string().as_str(),
+            Some(file.crc32()),
+        );
+        if !filter(&entry) {
+            skipped += 1;
+            continue;
+        }
+        let Some(target) = entry.safe_extract_path(dest) else {
+            skipped += 1;
+            continue;
+        };
+        if entry.is_directory {
+            fs::create_dir_all(&target).map_err(RarustError::Io)?;
+            extracted += 1;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(RarustError::Io)?;
+        }
+        match fs::File::create(&target) {
+            Ok(mut output) => {
+                std::io::copy(&mut file, &mut output).map_err(RarustError::Io)?;
+                extracted += 1;
+            }
+            Err(error) => {
+                return Err(RarustError::Io(error));
+            }
+        }
+    }
+
+    Ok(ExtractSummary {
+        total,
+        extracted,
+        skipped,
+        errors,
+    })
+}
+
+fn test_zip(path: &Path) -> Result<TestSummary> {
+    let file = fs::File::open(path).map_err(RarustError::Io)?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+    let mut tested = 0u64;
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+        if !file.is_dir() {
+            std::io::copy(&mut file, &mut std::io::sink()).map_err(RarustError::Io)?;
+        }
+        tested += 1;
+    }
+    Ok(TestSummary {
+        total: archive.len() as u64,
+        tested,
+        failed: 0,
+    })
+}
+
+fn list_tar<R: Read>(reader: R, method: &str) -> Result<Vec<Entry>> {
+    let mut archive = tar::Archive::new(reader);
+    let mut entries = Vec::new();
+    for item in archive.entries().map_err(RarustError::Io)? {
+        let entry = item.map_err(RarustError::Io)?;
+        let path = entry
+            .path()
+            .map_err(RarustError::Io)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let size = entry.header().size().unwrap_or(0);
+        entries.push(generic_entry(
+            &path,
+            size,
+            0,
+            entry.header().entry_type().is_dir(),
+            false,
+            method,
+            None,
+        ));
+    }
+    Ok(entries)
+}
+
+fn extract_tar<R, F>(reader: R, dest: &Path, filter: F) -> Result<ExtractSummary>
+where
+    R: Read,
+    F: Fn(&Entry) -> bool,
+{
+    fs::create_dir_all(dest).map_err(RarustError::Io)?;
+    let mut archive = tar::Archive::new(reader);
+    let mut total = 0u64;
+    let mut extracted = 0u64;
+    let mut skipped = 0u64;
+    let errors = 0u64;
+
+    for item in archive.entries().map_err(RarustError::Io)? {
+        let mut tar_entry = item.map_err(RarustError::Io)?;
+        total += 1;
+        let path = tar_entry
+            .path()
+            .map_err(RarustError::Io)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let is_dir = tar_entry.header().entry_type().is_dir();
+        let is_file = tar_entry.header().entry_type().is_file();
+        let entry = generic_entry(
+            &path,
+            tar_entry.header().size().unwrap_or(0),
+            0,
+            is_dir,
+            false,
+            "tar",
+            None,
+        );
+        if !filter(&entry) || (!is_dir && !is_file) {
+            skipped += 1;
+            continue;
+        }
+        let Some(target) = entry.safe_extract_path(dest) else {
+            skipped += 1;
+            continue;
+        };
+        if is_dir {
+            fs::create_dir_all(&target).map_err(RarustError::Io)?;
+        } else {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(RarustError::Io)?;
+            }
+            tar_entry.unpack(&target).map_err(RarustError::Io)?;
+        }
+        extracted += 1;
+    }
+
+    Ok(ExtractSummary {
+        total,
+        extracted,
+        skipped,
+        errors,
+    })
+}
+
+fn test_tar<R: Read>(reader: R) -> Result<TestSummary> {
+    let mut archive = tar::Archive::new(reader);
+    let mut total = 0u64;
+    let mut tested = 0u64;
+    for item in archive.entries().map_err(RarustError::Io)? {
+        let mut entry = item.map_err(RarustError::Io)?;
+        total += 1;
+        if entry.header().entry_type().is_file() {
+            std::io::copy(&mut entry, &mut std::io::sink()).map_err(RarustError::Io)?;
+        }
+        tested += 1;
+    }
+    Ok(TestSummary {
+        total,
+        tested,
+        failed: 0,
+    })
+}
+
+fn list_gzip(path: &Path) -> Result<Vec<Entry>> {
+    let mut decoder = GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?);
+    let mut data = Vec::new();
+    decoder.read_to_end(&mut data).map_err(RarustError::Io)?;
+    Ok(vec![generic_entry(
+        &gzip_output_name(path),
+        data.len() as u64,
+        fs::metadata(path).map_err(RarustError::Io)?.len(),
+        false,
+        false,
+        "gzip",
+        None,
+    )])
+}
+
+fn extract_gzip<F>(path: &Path, dest: &Path, filter: F) -> Result<ExtractSummary>
+where
+    F: Fn(&Entry) -> bool,
+{
+    fs::create_dir_all(dest).map_err(RarustError::Io)?;
+    let entry = list_gzip(path)?.remove(0);
+    if !filter(&entry) {
+        return Ok(ExtractSummary {
+            total: 1,
+            extracted: 0,
+            skipped: 1,
+            errors: 0,
+        });
+    }
+    let Some(target) = entry.safe_extract_path(dest) else {
+        return Ok(ExtractSummary {
+            total: 1,
+            extracted: 0,
+            skipped: 1,
+            errors: 0,
+        });
+    };
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(RarustError::Io)?;
+    }
+    let mut decoder = GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?);
+    let mut output = fs::File::create(target).map_err(RarustError::Io)?;
+    std::io::copy(&mut decoder, &mut output).map_err(RarustError::Io)?;
+    Ok(ExtractSummary {
+        total: 1,
+        extracted: 1,
+        skipped: 0,
+        errors: 0,
+    })
+}
+
+fn test_gzip(path: &Path) -> Result<TestSummary> {
+    let mut decoder = GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?);
+    std::io::copy(&mut decoder, &mut std::io::sink()).map_err(RarustError::Io)?;
+    Ok(TestSummary {
+        total: 1,
+        tested: 1,
+        failed: 0,
+    })
+}
+
+fn write_tar<W: Write>(writer: W, entries: &[ArchiveBuilderEntry]) -> Result<()> {
+    let owned = read_builder_entries(entries)?;
+    let mut builder = tar::Builder::new(writer);
+    for (name, data) in owned {
+        let name = normalized_archive_name(&name)?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, data.as_slice())
+            .map_err(RarustError::Io)?;
+    }
+    builder.finish().map_err(RarustError::Io)?;
+    Ok(())
+}
+
+fn normalized_archive_name(name: &[u8]) -> Result<String> {
+    let name = String::from_utf8_lossy(name).replace('\\', "/");
+    if name.is_empty()
+        || name.starts_with('/')
+        || name
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(RarustError::Unsupported(format!(
+            "unsafe archive entry name: {name}"
+        )));
+    }
+    Ok(name)
+}
+
+fn generic_entry(
+    name: &str,
+    size: u64,
+    compressed_size: u64,
+    is_directory: bool,
+    is_encrypted: bool,
+    method: &str,
+    crc32: Option<u32>,
+) -> Entry {
+    let ratio = if size > 0 {
+        compressed_size as f64 / size as f64
+    } else {
+        0.0
+    };
+    Entry {
+        name: name.replace('\\', "/"),
+        name_raw: name.as_bytes().to_vec(),
+        size,
+        compressed_size,
+        ratio,
+        is_directory,
+        is_encrypted,
+        is_stored: method.eq_ignore_ascii_case("stored") || method == "tar",
+        is_split_before: false,
+        is_split_after: false,
+        modified: None,
+        crc32,
+        method: method.to_string(),
+    }
+}
+
+fn zip_method(method: &CompressionMethod) -> zip::CompressionMethod {
+    match method {
+        CompressionMethod::Store => zip::CompressionMethod::Stored,
+        _ => zip::CompressionMethod::Deflated,
+    }
+}
+
+fn gzip_level(method: &CompressionMethod) -> GzipCompression {
+    match method {
+        CompressionMethod::Store => GzipCompression::none(),
+        CompressionMethod::Fastest | CompressionMethod::Fast => GzipCompression::fast(),
+        CompressionMethod::Best => GzipCompression::best(),
+        CompressionMethod::Normal | CompressionMethod::Good => GzipCompression::default(),
+    }
+}
+
+fn gzip_output_name(path: &Path) -> String {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output");
+    file_name
+        .strip_suffix(".gz")
+        .unwrap_or(file_name)
+        .to_string()
 }
 
 fn map_rars_extract_error(error: rars::error::Error) -> RarustError {

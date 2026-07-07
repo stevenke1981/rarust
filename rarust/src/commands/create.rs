@@ -15,7 +15,7 @@ use rarust_core::error::{RarustError, Result};
 /// Execute the `create` command.
 pub fn execute(args: &CreateArgs) -> Result<()> {
     let mut builder = ArchiveBuilder::new()
-        .with_format(map_format(&args.format))
+        .with_format(map_format(&args.format, Path::new(&args.archive))?)
         .with_method(map_method(&args.method))
         .solid(args.solid);
 
@@ -28,7 +28,7 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
             None => {
                 return Err(RarustError::Unsupported(format!(
                     "invalid volume size: {v} (expected e.g. 100m, 1g)"
-                )))
+                )));
             }
         }
     }
@@ -51,13 +51,9 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
         if path.is_dir() {
             for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
-                    let rel = entry
-                        .path()
-                        .strip_prefix(path)
-                        .unwrap_or(entry.path());
+                    let rel = entry.path().strip_prefix(path).unwrap_or(entry.path());
                     let archive_name = rel.to_string_lossy().replace('\\', "/");
-                    builder =
-                        builder.add_file_as(entry.path(), archive_name);
+                    builder = builder.add_file_as(entry.path(), archive_name);
                     count += 1;
                 }
             }
@@ -114,10 +110,19 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
 }
 
 /// Map the CLI archive format to the core `ArchiveFormat`.
-fn map_format(format: &crate::cli::ArchiveFormatArg) -> ArchiveFormat {
+fn map_format(format: &crate::cli::ArchiveFormatArg, archive: &Path) -> Result<ArchiveFormat> {
     match format {
-        crate::cli::ArchiveFormatArg::Rar5 => ArchiveFormat::Rar5,
-        crate::cli::ArchiveFormatArg::Rar4 => ArchiveFormat::Rar4,
+        crate::cli::ArchiveFormatArg::Auto => match ArchiveFormat::from_path(archive) {
+            Ok(format) => Ok(format),
+            Err(_) if archive.extension().is_none() => Ok(ArchiveFormat::Rar5),
+            Err(e) => Err(e),
+        },
+        crate::cli::ArchiveFormatArg::Rar5 => Ok(ArchiveFormat::Rar5),
+        crate::cli::ArchiveFormatArg::Rar4 => Ok(ArchiveFormat::Rar4),
+        crate::cli::ArchiveFormatArg::Zip => Ok(ArchiveFormat::Zip),
+        crate::cli::ArchiveFormatArg::Tar => Ok(ArchiveFormat::Tar),
+        crate::cli::ArchiveFormatArg::TarGz => Ok(ArchiveFormat::TarGz),
+        crate::cli::ArchiveFormatArg::Gzip => Ok(ArchiveFormat::Gzip),
     }
 }
 
