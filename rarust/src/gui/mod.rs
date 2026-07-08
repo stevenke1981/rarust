@@ -3,12 +3,13 @@
 //! Feature-gated behind `gui`. Supports multi-language UI with CJK font loading
 //! for correct Chinese character rendering.
 
+pub mod actions;
 mod app;
 mod fonts;
 mod i18n;
+mod icons;
 pub mod theme;
 pub mod widgets;
-pub mod actions;
 
 pub use app::run_gui;
 pub use i18n::Locale;

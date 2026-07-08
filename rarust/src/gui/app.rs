@@ -14,6 +14,7 @@ use rarust_core::util;
 use super::actions::create_dialog::{CompressionMethod, CreateArchiveParams, CreateDialog};
 use super::fonts::FontSetup;
 use super::i18n::{I18n, Locale, Message};
+use super::icons::{IconCache, UiIcon, app_icon};
 use super::theme::Theme;
 use super::widgets::password::PasswordDialog;
 use super::widgets::preview::FilePreview;
@@ -52,6 +53,7 @@ pub struct RarustApp {
     preview: FilePreview,
     create_dialog: CreateDialog,
     tab_bar: TabBar,
+    icons: IconCache,
 
     /// Set when the opened archive needs a password.
     needs_password: bool,
@@ -98,6 +100,7 @@ impl RarustApp {
             preview: FilePreview::new(),
             create_dialog: CreateDialog::new(),
             tab_bar: TabBar::new(),
+            icons: IconCache::new(),
             needs_password: false,
         };
         if has_archive {
@@ -112,8 +115,7 @@ impl RarustApp {
                         .unwrap_or(p)
                 })
                 .unwrap_or_else(|| "Archive".to_string());
-            app.tab_bar
-                .open_tab(app.archive_path.clone(), label);
+            app.tab_bar.open_tab(app.archive_path.clone(), label);
         }
         app
     }
@@ -203,12 +205,19 @@ impl RarustApp {
             let cmp = match self.sort_by {
                 SortBy::Name => a.name.cmp(&b.name),
                 SortBy::Size => a.size.cmp(&b.size),
-                SortBy::Ratio => a.ratio.partial_cmp(&b.ratio).unwrap_or(std::cmp::Ordering::Equal),
+                SortBy::Ratio => a
+                    .ratio
+                    .partial_cmp(&b.ratio)
+                    .unwrap_or(std::cmp::Ordering::Equal),
                 SortBy::Modified => a.modified.cmp(&b.modified),
                 SortBy::Crc32 => a.crc32.cmp(&b.crc32),
                 SortBy::Method => a.method.cmp(&b.method),
             };
-            if self.sort_ascending { cmp } else { cmp.reverse() }
+            if self.sort_ascending {
+                cmp
+            } else {
+                cmp.reverse()
+            }
         });
         result
     }
@@ -225,9 +234,10 @@ impl RarustApp {
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
-        self.selected.iter().next().and_then(|idx| {
-            self.archive.as_ref()?.entries.get(*idx)
-        })
+        self.selected
+            .iter()
+            .next()
+            .and_then(|idx| self.archive.as_ref()?.entries.get(*idx))
     }
 
     fn extract_selected(&mut self, entry_name: String, is_directory: bool) {
@@ -305,29 +315,46 @@ impl RarustApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.menu_button("File", |ui| {
-                        if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
+                        let open = self.i18n.t(Message::OpenArchive).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::Open, &open))
+                            .clicked()
+                        {
                             self.pick_archive_file();
                             ui.close();
                         }
-                        if ui.button(self.i18n.t(Message::CloseArchive)).clicked() {
+                        let close = self.i18n.t(Message::CloseArchive).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::Close, &close))
+                            .clicked()
+                        {
                             self.close_archive();
                             ui.close();
                         }
-                        if ui.button(self.i18n.t(Message::Refresh)).clicked() {
+                        let refresh = self.i18n.t(Message::Refresh).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::Refresh, &refresh))
+                            .clicked()
+                        {
                             self.reload_archive();
                             ui.close();
                         }
-                        if ui.button(self.i18n.t(Message::CreateArchive)).clicked() {
+                        let create = self.i18n.t(Message::CreateArchive).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::Create, &create))
+                            .clicked()
+                        {
                             self.create_dialog.visible = true;
                             ui.close();
                         }
                     });
 
                     ui.menu_button("Commands", |ui| {
+                        let extract = self.i18n.t(Message::Extract).to_owned();
                         if ui
                             .add_enabled(
                                 !self.selected.is_empty(),
-                                Button::new(self.i18n.t(Message::Extract)),
+                                self.menu_icon_button(ui, UiIcon::Extract, &extract),
                             )
                             .clicked()
                         {
@@ -336,10 +363,11 @@ impl RarustApp {
                             }
                             ui.close();
                         }
+                        let test = self.i18n.t(Message::Test).to_owned();
                         if ui
                             .add_enabled(
                                 self.archive_path.is_some(),
-                                Button::new(self.i18n.t(Message::Test)),
+                                self.menu_icon_button(ui, UiIcon::Test, &test),
                             )
                             .clicked()
                         {
@@ -350,7 +378,10 @@ impl RarustApp {
 
                     ui.menu_button(self.i18n.t(Message::Theme), |ui| {
                         if ui
-                            .selectable_label(self.theme.name == "Light", self.i18n.t(Message::LightTheme))
+                            .selectable_label(
+                                self.theme.name == "Light",
+                                self.i18n.t(Message::LightTheme),
+                            )
                             .clicked()
                         {
                             self.theme = Theme::LIGHT;
@@ -358,7 +389,10 @@ impl RarustApp {
                             ui.close();
                         }
                         if ui
-                            .selectable_label(self.theme.name == "Dark", self.i18n.t(Message::DarkTheme))
+                            .selectable_label(
+                                self.theme.name == "Dark",
+                                self.i18n.t(Message::DarkTheme),
+                            )
                             .clicked()
                         {
                             self.theme = Theme::DARK;
@@ -382,7 +416,9 @@ impl RarustApp {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(self.i18n.t(Message::AppTitle)).color(self.theme.muted));
+                        ui.label(
+                            RichText::new(self.i18n.t(Message::AppTitle)).color(self.theme.muted),
+                        );
                     });
                 });
             });
@@ -406,61 +442,96 @@ impl RarustApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let open = self.i18n.t(Message::OpenArchive).to_owned();
                     if ui
                         .add_sized(
-                            [86.0, 38.0],
-                            toolbar_button(self.i18n.t(Message::OpenArchive), self.theme),
+                            [100.0, 38.0],
+                            self.toolbar_icon_button(ui, UiIcon::Open, &open),
                         )
                         .clicked()
                     {
                         self.pick_archive_file();
                     }
 
+                    let create = self.i18n.t(Message::CreateArchive).to_owned();
+                    if ui
+                        .add_sized(
+                            [100.0, 38.0],
+                            self.toolbar_icon_button(ui, UiIcon::Create, &create),
+                        )
+                        .clicked()
+                    {
+                        self.create_dialog.visible = true;
+                    }
+
                     let can_extract = !self.selected.is_empty();
+                    let extract = self.i18n.t(Message::Extract).to_owned();
                     if ui
                         .add_enabled(
                             can_extract,
-                            Button::new(toolbar_label(self.i18n.t(Message::Extract), self.theme))
-                                .min_size(Vec2::new(86.0, 38.0)),
+                            self.toolbar_icon_button(ui, UiIcon::Extract, &extract),
                         )
                         .clicked()
-                        && let Some(entry) = self.selected_entry().map(|e| (e.name.clone(), e.is_directory))
+                        && let Some(entry) = self
+                            .selected_entry()
+                            .map(|e| (e.name.clone(), e.is_directory))
                     {
                         self.extract_selected(entry.0, entry.1);
                     }
 
+                    let test = self.i18n.t(Message::Test).to_owned();
                     if ui
                         .add_enabled(
                             self.archive_path.is_some(),
-                            Button::new(toolbar_label(self.i18n.t(Message::Test), self.theme))
-                                .min_size(Vec2::new(86.0, 38.0)),
+                            self.toolbar_icon_button(ui, UiIcon::Test, &test),
                         )
                         .clicked()
                     {
                         self.test_archive();
                     }
 
+                    let refresh = self.i18n.t(Message::Refresh).to_owned();
                     if ui
                         .add_sized(
-                            [86.0, 38.0],
-                            toolbar_button(self.i18n.t(Message::Refresh), self.theme),
+                            [100.0, 38.0],
+                            self.toolbar_icon_button(ui, UiIcon::Refresh, &refresh),
                         )
                         .clicked()
                     {
                         self.reload_archive();
                     }
 
+                    let preview = self.i18n.t(Message::Preview).to_owned();
+                    if ui
+                        .add_sized(
+                            [100.0, 38.0],
+                            self.toolbar_icon_button(ui, UiIcon::Preview, &preview),
+                        )
+                        .clicked()
+                    {
+                        self.preview.visible = !self.preview.visible;
+                    }
+
                     ui.separator();
 
-                    if let Some(entry) = self.selected_entry() {
-                        ui.label(RichText::new(util::format_size(entry.size)).color(self.theme.muted));
-                        if entry.is_encrypted {
+                    if let Some((entry_size, is_encrypted)) = self
+                        .selected_entry()
+                        .map(|entry| (entry.size, entry.is_encrypted))
+                    {
+                        ui.label(
+                            RichText::new(util::format_size(entry_size)).color(self.theme.muted),
+                        );
+                        if is_encrypted {
+                            ui.add(self.icons.image(ui.ctx(), UiIcon::Password));
                             ui.label(
-                                RichText::new(self.i18n.t(Message::Encrypted)).color(self.theme.warning),
+                                RichText::new(self.i18n.t(Message::Encrypted))
+                                    .color(self.theme.warning),
                             );
                         }
                     } else {
-                        ui.label(RichText::new(self.i18n.t(Message::SelectFile)).color(self.theme.muted));
+                        ui.label(
+                            RichText::new(self.i18n.t(Message::SelectFile)).color(self.theme.muted),
+                        );
                     }
                 });
             });
@@ -479,7 +550,8 @@ impl RarustApp {
                     archive_path_field(ui, self.archive_path.as_deref().unwrap_or("-"), self.theme);
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new(self.i18n.t(Message::SearchPlaceholder)).color(self.theme.muted),
+                        RichText::new(self.i18n.t(Message::SearchPlaceholder))
+                            .color(self.theme.muted),
                     );
                     ui.add_sized(
                         [220.0, 24.0],
@@ -692,7 +764,8 @@ impl RarustApp {
 
     fn create_archive(&mut self, params: CreateArchiveParams) {
         self.status = self.i18n.t(Message::ProgressCreating).to_owned();
-        self.progress_dialog.show(&self.i18n.t(Message::ProgressCreating));
+        self.progress_dialog
+            .show(&self.i18n.t(Message::ProgressCreating));
 
         use rarust_core::archive::ArchiveBuilder;
         let method = match params.method {
@@ -756,11 +829,12 @@ impl RarustApp {
         } else {
             self.theme.row_alt
         };
-        let name = if entry.is_directory {
-            format!("[DIR] {}", entry.name)
+        let icon = if entry.is_directory {
+            UiIcon::Folder
         } else {
-            entry.name.clone()
+            UiIcon::File
         };
+        let name = entry.name.clone();
         let name_color = if entry.is_directory {
             self.theme.accent
         } else {
@@ -771,12 +845,16 @@ impl RarustApp {
             .fill(fill)
             .inner_margin(Margin::symmetric(4, 1))
             .show(ui, |ui| {
-                let resp = ui
-                    .add_sized(
-                        [320.0, 22.0],
-                        Button::selectable(selected, RichText::new(name).color(name_color))
-                            .frame(false),
-                    );
+                let resp = ui.add_sized(
+                    [320.0, 22.0],
+                    Button::image_and_text(
+                        self.icons.image(ui.ctx(), icon),
+                        RichText::new(name).color(name_color),
+                    )
+                    .selected(selected)
+                    .frame_when_inactive(selected)
+                    .frame(false),
+                );
 
                 // Multi-select: Ctrl/Cmd+click toggles, Shift+click extends
                 let shift = ui.input(|i| i.modifiers.shift);
@@ -807,17 +885,29 @@ impl RarustApp {
 
                 // Context menu on right-click
                 resp.context_menu(|ui| {
-                    if ui.button(self.i18n.t(Message::Extract)).clicked() {
+                    let extract = self.i18n.t(Message::Extract).to_owned();
+                    if ui
+                        .add(self.menu_icon_button(ui, UiIcon::Extract, &extract))
+                        .clicked()
+                    {
                         if let Some(e) = self.selected_entry() {
                             self.extract_selected(e.name.clone(), e.is_directory);
                         }
                         ui.close();
                     }
-                    if ui.button(self.i18n.t(Message::CopyPath)).clicked() {
+                    let copy_path = self.i18n.t(Message::CopyPath).to_owned();
+                    if ui
+                        .add(self.menu_icon_button(ui, UiIcon::File, &copy_path))
+                        .clicked()
+                    {
                         ui.ctx().copy_text(entry.name.clone());
                         ui.close();
                     }
-                    if ui.button(self.i18n.t(Message::SelectAll)).clicked() {
+                    let select_all = self.i18n.t(Message::SelectAll).to_owned();
+                    if ui
+                        .add(self.menu_icon_button(ui, UiIcon::Tab, &select_all))
+                        .clicked()
+                    {
                         let entries = self.filtered_entries();
                         self.selected = entries.into_iter().map(|(i, _)| i).collect();
                         ui.close();
@@ -855,10 +945,29 @@ impl RarustApp {
                     RichText::new(self.i18n.t(Message::WelcomeDetail)).color(self.theme.muted),
                 );
                 ui.add_space(14.0);
-                if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
+                let open = self.i18n.t(Message::OpenArchive).to_owned();
+                if ui
+                    .add(self.toolbar_icon_button(ui, UiIcon::Open, &open))
+                    .clicked()
+                {
                     self.pick_archive_file();
                 }
             });
+    }
+
+    fn toolbar_icon_button(&mut self, ui: &Ui, icon: UiIcon, label: &str) -> Button<'static> {
+        Button::image_and_text(
+            self.icons.image(ui.ctx(), icon),
+            toolbar_label(label, self.theme),
+        )
+        .min_size(Vec2::new(100.0, 38.0))
+    }
+
+    fn menu_icon_button(&mut self, ui: &Ui, icon: UiIcon, label: &str) -> Button<'static> {
+        Button::image_and_text(
+            self.icons.image(ui.ctx(), icon),
+            RichText::new(label).color(self.theme.text),
+        )
     }
 
     fn show_status_bar(&self, ui: &mut Ui) {
@@ -925,9 +1034,17 @@ impl eframe::App for RarustApp {
         });
         // Reload theme from saved config
         if let Some(saved) = Theme::load_saved() {
-            let desired = if saved == "Dark" { Theme::DARK } else { Theme::LIGHT };
+            let desired = if saved == "Dark" {
+                Theme::DARK
+            } else {
+                Theme::LIGHT
+            };
             if self.theme.name != desired.name {
-                self.theme = if saved == "Dark" { Theme::DARK } else { Theme::LIGHT };
+                self.theme = if saved == "Dark" {
+                    Theme::DARK
+                } else {
+                    Theme::LIGHT
+                };
             }
         }
     }
@@ -942,10 +1059,6 @@ impl eframe::App for RarustApp {
     }
 }
 
-fn toolbar_button<'a>(label: &'a str, theme: Theme) -> Button<'a> {
-    Button::new(toolbar_label(label, theme)).min_size(Vec2::new(86.0, 38.0))
-}
-
 fn toolbar_label(label: &str, theme: Theme) -> RichText {
     RichText::new(label).strong().color(theme.text)
 }
@@ -957,16 +1070,17 @@ fn archive_path_field(ui: &mut Ui, path: &str, theme: Theme) {
         .inner_margin(Margin::symmetric(6, 3))
         .show(ui, |ui| {
             ui.set_min_width(420.0);
-            ui.add(
-                Label::new(RichText::new(path).monospace().color(theme.text)).truncate(),
-            );
+            ui.add(Label::new(RichText::new(path).monospace().color(theme.text)).truncate());
         });
 }
 
 fn header_clickable(ui: &mut Ui, text: &str, width: f32, on_click: impl FnOnce()) {
     Frame::NONE
         .fill(ui.visuals().extreme_bg_color)
-        .stroke(Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+        .stroke(Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
         .inner_margin(Margin::symmetric(5, 3))
         .show(ui, |ui| {
             ui.set_min_width(width);
@@ -983,13 +1097,7 @@ fn table_cell(ui: &mut Ui, text: &str, width: f32, right_aligned: bool, theme: T
     table_cell_colored(ui, text, width, theme.text, right_aligned);
 }
 
-fn table_cell_colored(
-    ui: &mut Ui,
-    text: &str,
-    width: f32,
-    color: Color32,
-    right_aligned: bool,
-) {
+fn table_cell_colored(ui: &mut Ui, text: &str, width: f32, color: Color32, right_aligned: bool) {
     Frame::NONE
         .inner_margin(Margin::symmetric(4, 1))
         .show(ui, |ui| {
@@ -1105,7 +1213,8 @@ pub fn run_gui(
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1120.0, 720.0])
-            .with_min_inner_size([820.0, 560.0]),
+            .with_min_inner_size([820.0, 560.0])
+            .with_icon(app_icon()),
         ..Default::default()
     };
 
