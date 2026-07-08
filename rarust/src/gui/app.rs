@@ -743,7 +743,6 @@ impl RarustApp {
                     });
                     header_clickable(ui, "Attr", 60.0, || {});
                 });
-                ui.end_row();
 
                 ScrollArea::vertical()
                     .id_salt("classic_archive_entry_table")
@@ -845,87 +844,91 @@ impl RarustApp {
             .fill(fill)
             .inner_margin(Margin::symmetric(4, 1))
             .show(ui, |ui| {
-                let resp = ui.add_sized(
-                    [320.0, 22.0],
-                    Button::image_and_text(
-                        self.icons.image(ui.ctx(), icon),
-                        RichText::new(name).color(name_color),
-                    )
-                    .selected(selected)
-                    .frame_when_inactive(selected)
-                    .frame(false),
-                );
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let resp = ui.add_sized(
+                        [320.0, 24.0],
+                        Button::image_and_text(
+                            self.icons.image(ui.ctx(), icon),
+                            RichText::new(name).color(name_color),
+                        )
+                        .selected(selected)
+                        .frame_when_inactive(selected)
+                        .frame(false)
+                        .truncate(),
+                    );
 
-                // Multi-select: Ctrl/Cmd+click toggles, Shift+click extends
-                let shift = ui.input(|i| i.modifiers.shift);
-                let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
-                if resp.clicked() {
-                    if ctrl {
-                        if selected {
-                            self.selected.remove(&idx);
-                        } else {
-                            self.selected.insert(idx);
-                        }
-                    } else if shift {
-                        if let Some(last) = self.selected.iter().max() {
-                            let range: HashSet<usize> = if idx > *last {
-                                (*last..=idx).collect()
+                    // Multi-select: Ctrl/Cmd+click toggles, Shift+click extends
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
+                    if resp.clicked() {
+                        if ctrl {
+                            if selected {
+                                self.selected.remove(&idx);
                             } else {
-                                (idx..=*last).collect()
-                            };
-                            self.selected.extend(range);
+                                self.selected.insert(idx);
+                            }
+                        } else if shift {
+                            if let Some(last) = self.selected.iter().max() {
+                                let range: HashSet<usize> = if idx > *last {
+                                    (*last..=idx).collect()
+                                } else {
+                                    (idx..=*last).collect()
+                                };
+                                self.selected.extend(range);
+                            } else {
+                                self.selected.insert(idx);
+                            }
                         } else {
+                            self.selected.clear();
                             self.selected.insert(idx);
                         }
-                    } else {
-                        self.selected.clear();
-                        self.selected.insert(idx);
                     }
-                }
 
-                // Context menu on right-click
-                resp.context_menu(|ui| {
-                    let extract = self.i18n.t(Message::Extract).to_owned();
-                    if ui
-                        .add(self.menu_icon_button(ui, UiIcon::Extract, &extract))
-                        .clicked()
-                    {
-                        if let Some(e) = self.selected_entry() {
-                            self.extract_selected(e.name.clone(), e.is_directory);
+                    // Context menu on right-click
+                    resp.context_menu(|ui| {
+                        let extract = self.i18n.t(Message::Extract).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::Extract, &extract))
+                            .clicked()
+                        {
+                            if let Some(e) = self.selected_entry() {
+                                self.extract_selected(e.name.clone(), e.is_directory);
+                            }
+                            ui.close();
                         }
-                        ui.close();
-                    }
-                    let copy_path = self.i18n.t(Message::CopyPath).to_owned();
-                    if ui
-                        .add(self.menu_icon_button(ui, UiIcon::File, &copy_path))
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(entry.name.clone());
-                        ui.close();
-                    }
-                    let select_all = self.i18n.t(Message::SelectAll).to_owned();
-                    if ui
-                        .add(self.menu_icon_button(ui, UiIcon::Tab, &select_all))
-                        .clicked()
-                    {
-                        let entries = self.filtered_entries();
-                        self.selected = entries.into_iter().map(|(i, _)| i).collect();
-                        ui.close();
-                    }
+                        let copy_path = self.i18n.t(Message::CopyPath).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::File, &copy_path))
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(entry.name.clone());
+                            ui.close();
+                        }
+                        let select_all = self.i18n.t(Message::SelectAll).to_owned();
+                        if ui
+                            .add(self.menu_icon_button(ui, UiIcon::Tab, &select_all))
+                            .clicked()
+                        {
+                            let entries = self.filtered_entries();
+                            self.selected = entries.into_iter().map(|(i, _)| i).collect();
+                            ui.close();
+                        }
+                    });
+
+                    table_cell(ui, &entry.size, 92.0, true, self.theme);
+                    table_cell(ui, &entry.ratio, 72.0, true, self.theme);
+                    table_cell(ui, &entry.modified, 142.0, false, self.theme);
+                    table_cell(ui, &entry.crc32, 92.0, false, self.theme);
+                    table_cell(ui, &entry.method, 108.0, false, self.theme);
+                    let attrs_color = if entry.is_encrypted {
+                        self.theme.warning
+                    } else {
+                        self.theme.muted
+                    };
+                    table_cell_colored(ui, &entry.attrs, 60.0, attrs_color, false);
                 });
             });
-        table_cell(ui, &entry.size, 92.0, true, self.theme);
-        table_cell(ui, &entry.ratio, 72.0, true, self.theme);
-        table_cell(ui, &entry.modified, 142.0, false, self.theme);
-        table_cell(ui, &entry.crc32, 92.0, false, self.theme);
-        table_cell(ui, &entry.method, 108.0, false, self.theme);
-        let attrs_color = if entry.is_encrypted {
-            self.theme.warning
-        } else {
-            self.theme.muted
-        };
-        table_cell_colored(ui, &entry.attrs, 60.0, attrs_color, false);
-        ui.end_row();
     }
 
     fn show_welcome_state(&mut self, ui: &mut Ui) {
@@ -1098,17 +1101,18 @@ fn table_cell(ui: &mut Ui, text: &str, width: f32, right_aligned: bool, theme: T
 }
 
 fn table_cell_colored(ui: &mut Ui, text: &str, width: f32, color: Color32, right_aligned: bool) {
+    let layout = if right_aligned {
+        egui::Layout::right_to_left(egui::Align::Center)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Center)
+    };
+
     Frame::NONE
         .inner_margin(Margin::symmetric(4, 1))
         .show(ui, |ui| {
-            ui.set_min_width(width);
-            if right_aligned {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(Label::new(RichText::new(text).color(color)).truncate());
-                });
-            } else {
+            ui.allocate_ui_with_layout(Vec2::new(width, 24.0), layout, |ui| {
                 ui.add(Label::new(RichText::new(text).color(color)).truncate());
-            }
+            });
         });
 }
 
