@@ -116,3 +116,48 @@ impl Default for PasswordDialog {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_hit_returns_stored_password() {
+        let mut dlg = PasswordDialog::new();
+        // Simulate entering a password with remember_session
+        dlg.password = "secret".to_string();
+        dlg.remember_session = true;
+        // Simulate the OK flow
+        let pwd = dlg.password.clone();
+        dlg.cache.insert("/path/to/archive.rar".to_string(), pwd);
+
+        assert_eq!(
+            dlg.cached("/path/to/archive.rar"),
+            Some("secret".to_string())
+        );
+    }
+
+    #[test]
+    fn cache_miss_returns_none() {
+        let dlg = PasswordDialog::new();
+        assert_eq!(dlg.cached("/unknown.rar"), None);
+    }
+
+    #[test]
+    fn prompt_does_not_override_cache() {
+        let mut dlg = PasswordDialog::new();
+        dlg.cache
+            .insert("/cached.rar".to_string(), "existing".to_string());
+        dlg.prompt("/cached.rar");
+        assert!(!dlg.visible);
+    }
+
+    #[test]
+    fn clear_cache_empties_all_entries() {
+        let mut dlg = PasswordDialog::new();
+        dlg.cache.insert("/a.rar".to_string(), "p1".to_string());
+        dlg.cache.insert("/b.rar".to_string(), "p2".to_string());
+        dlg.clear_cache();
+        assert!(dlg.cache.is_empty());
+    }
+}

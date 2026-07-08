@@ -158,3 +158,81 @@ fn truncate_label(label: &str, max: usize) -> String {
         format!("{front}...")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_tab_bar_is_empty() {
+        let bar = TabBar::new();
+        assert!(bar.tabs.is_empty());
+        assert_eq!(bar.active, 0);
+    }
+
+    #[test]
+    fn open_tab_adds_and_activates() {
+        let mut bar = TabBar::new();
+        let id = bar.open_tab(Some("/test.rar".into()), "test.rar".into());
+        assert_eq!(bar.tabs.len(), 1);
+        assert_eq!(bar.active, 0);
+        assert_eq!(bar.tabs[0].id, id);
+        assert_eq!(bar.tabs[0].archive_path.as_deref(), Some("/test.rar"));
+    }
+
+    #[test]
+    fn open_multiple_tabs_switches_to_last() {
+        let mut bar = TabBar::new();
+        bar.open_tab(Some("/a.rar".into()), "A".into());
+        bar.open_tab(Some("/b.rar".into()), "B".into());
+        assert_eq!(bar.tabs.len(), 2);
+        assert_eq!(bar.active, 1);
+    }
+
+    #[test]
+    fn switch_to_valid_tab() {
+        let mut bar = TabBar::new();
+        bar.open_tab(Some("/a.rar".into()), "A".into());
+        bar.open_tab(Some("/b.rar".into()), "B".into());
+        bar.switch_to(0);
+        assert_eq!(bar.active, 0);
+    }
+
+    #[test]
+    fn close_tab_removes_and_readjusts_active() {
+        let mut bar = TabBar::new();
+        bar.open_tab(Some("/a.rar".into()), "A".into());
+        bar.open_tab(Some("/b.rar".into()), "B".into());
+        bar.close_tab(0);
+        assert_eq!(bar.tabs.len(), 1);
+        assert_eq!(bar.tabs[0].label, "B");
+        assert_eq!(bar.active, 0);
+    }
+
+    #[test]
+    fn close_active_tab_when_last() {
+        let mut bar = TabBar::new();
+        bar.open_tab(Some("/a.rar".into()), "A".into());
+        bar.close_active();
+        assert!(bar.tabs.is_empty());
+    }
+
+    #[test]
+    fn close_nonexistent_tab_returns_false() {
+        let mut bar = TabBar::new();
+        assert!(!bar.close_tab(0));
+    }
+
+    #[test]
+    fn truncate_short_label() {
+        assert_eq!(truncate_label("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_long_label() {
+        let long = "abcdefghijklmnopqrstuvwxyz"; // 26 chars
+        let t = truncate_label(long, 10);
+        assert!(t.chars().count() <= 10);
+        assert!(t.ends_with("..."));
+    }
+}

@@ -295,3 +295,62 @@ fn truncate_path(path: &str, max_width: f32) -> String {
         .collect();
     format!("{front}...{back}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_empty_archive_path() {
+        let dlg = CreateDialog::new();
+        let result = dlg.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_no_source_files() {
+        let mut dlg = CreateDialog::new();
+        dlg.archive_path = "/tmp/test.rar".to_string();
+        let result = dlg.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_passwords() {
+        let mut dlg = CreateDialog::new();
+        dlg.archive_path = "/tmp/test.rar".to_string();
+        dlg.source_paths.push("/tmp/file.txt".to_string());
+        dlg.password = "secret".to_string();
+        dlg.confirm_password = "different".to_string();
+        let result = dlg.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_succeeds_with_valid_input() {
+        let mut dlg = CreateDialog::new();
+        dlg.archive_path = "/tmp/test.rar".to_string();
+        dlg.source_paths.push("/tmp/file.txt".to_string());
+        let result = dlg.validate();
+        assert!(result.is_ok());
+        let params = result.unwrap();
+        assert_eq!(params.archive_path, "/tmp/test.rar");
+        assert_eq!(params.source_paths.len(), 1);
+        assert!(params.password.is_none());
+    }
+
+    #[test]
+    fn compression_method_names() {
+        assert_eq!(CompressionMethod::Store.name(), "Store");
+        assert_eq!(CompressionMethod::Normal.name(), "Normal");
+        assert_eq!(CompressionMethod::Best.name(), "Best");
+    }
+
+    #[test]
+    fn default_dialog_is_hidden() {
+        let dlg = CreateDialog::new();
+        assert!(!dlg.visible);
+        assert!(dlg.archive_path.is_empty());
+        assert_eq!(dlg.method, CompressionMethod::Normal);
+    }
+}
