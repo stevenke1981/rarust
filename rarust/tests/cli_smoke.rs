@@ -55,6 +55,30 @@ fn cli_list_json_smoke() {
 }
 
 #[test]
+fn cli_list_tree_smoke() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let archive = write_fixture(&tmp);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("list")
+        .arg(&archive)
+        .arg("--tree")
+        .output()
+        .expect("run rarust list tree");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello.txt"), "stdout: {stdout}");
+    assert!(stdout.contains("nested/"), "stdout: {stdout}");
+    assert!(stdout.contains("  world.txt"), "stdout: {stdout}");
+    assert!(!stdout.contains("nested/world.txt"), "stdout: {stdout}");
+}
+
+#[test]
 fn cli_test_json_smoke() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let archive = write_fixture(&tmp);

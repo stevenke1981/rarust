@@ -123,20 +123,35 @@ fn print_table(archive_path: &str, entries: &[Entry], archive: &PortableArchive)
 
 /// Print archive listing as a tree (directory hierarchy).
 fn print_tree(entries: &[Entry]) -> Result<()> {
-    let mut last_dir = String::new();
+    let mut printed_dirs = std::collections::BTreeSet::new();
+
     for entry in entries {
-        if entry.is_directory {
-            println!(" {}/", entry.name);
-            last_dir = entry.name.clone();
+        let normalized = entry.name.replace('\\', "/");
+        let parts: Vec<_> = normalized
+            .trim_matches('/')
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let dir_count = if entry.is_directory {
+            parts.len()
         } else {
-            #[allow(unused_variables)]
-            let _prefix = if entry.name.starts_with(&last_dir) && !last_dir.is_empty() {
-                // Placeholder for tree formatting — simplified for now
-                ""
-            } else {
-                ""
-            };
-            println!(" {}", entry.name);
+            parts.len().saturating_sub(1)
+        };
+
+        for depth in 0..dir_count {
+            let key = parts[..=depth].join("/");
+            if printed_dirs.insert(key) {
+                println!("{}{}/", "  ".repeat(depth), parts[depth]);
+            }
+        }
+
+        if !entry.is_directory {
+            let depth = parts.len().saturating_sub(1);
+            println!("{}{}", "  ".repeat(depth), parts[depth]);
         }
     }
     Ok(())
