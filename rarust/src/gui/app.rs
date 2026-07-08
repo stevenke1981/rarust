@@ -11,9 +11,14 @@ use rarust_core::entry::Entry;
 use rarust_core::error::RarustError;
 use rarust_core::util;
 
+use super::actions::create_dialog::{CompressionMethod, CreateArchiveParams, CreateDialog};
 use super::fonts::FontSetup;
 use super::i18n::{I18n, Locale, Message};
 use super::theme::Theme;
+use super::widgets::password::PasswordDialog;
+use super::widgets::preview::FilePreview;
+use super::widgets::progress::ProgressDialog;
+use super::widgets::tab_bar::{TabBar, TabBarAction};
 
 /// Sortable column in the entry table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +45,16 @@ pub struct RarustApp {
     archive: Option<LoadedArchive>,
     load_error: Option<String>,
     status: String,
+
+    // Widgets
+    password_dialog: PasswordDialog,
+    progress_dialog: ProgressDialog,
+    preview: FilePreview,
+    create_dialog: CreateDialog,
+    tab_bar: TabBar,
+
+    /// Set when the opened archive needs a password.
+    needs_password: bool,
 }
 
 struct LoadedArchive {
@@ -78,9 +93,27 @@ impl RarustApp {
             } else {
                 I18n::new(locale).t(Message::StatusReady).to_owned()
             },
+            password_dialog: PasswordDialog::new(),
+            progress_dialog: ProgressDialog::new(),
+            preview: FilePreview::new(),
+            create_dialog: CreateDialog::new(),
+            tab_bar: TabBar::new(),
+            needs_password: false,
         };
         if has_archive {
             app.reload_archive();
+            let label = app
+                .archive_path
+                .clone()
+                .map(|p| {
+                    std::path::Path::new(&p)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or(p)
+                })
+                .unwrap_or_else(|| "Archive".to_string());
+            app.tab_bar
+                .open_tab(app.archive_path.clone(), label);
         }
         app
     }
@@ -99,24 +132,33 @@ impl RarustApp {
     }
 
     fn reload_archive(&mut self) {
-        let Some(path) = self.archive_path.as_deref() else {
-            self.archive = None;
-            self.load_error = None;
-            self.selected.clear();
-            self.status = self.i18n.t(Message::StatusReady).to_owned();
-            return;
+        let path = match self.archive_path.as_deref() {
+            Some(p) => p.to_owned(),
+            None => {
+                self.archive = None;
+                self.load_error = None;
+                self.selected.clear();
+                self.status = self.i18n.t(Message::StatusReady).to_owned();
+                return;
+            }
         };
 
         self.status = self.i18n.t(Message::StatusLoading).to_owned();
         self.load_error = None;
         self.selected.clear();
 
+        // Check password dialog cache first
+        let pwd = self
+            .password_dialog
+            .cached(&path)
+            .or_else(|| self.password.clone());
+
         let options = OpenOptions {
-            password: self.password.clone(),
+            password: pwd,
             ..OpenOptions::default()
         };
 
-        match PortableArchive::open_with_options(path, &options) {
+        match PortableArchive::open_with_options(&path, &options) {
             Ok(archive) => {
                 let family_label = archive.format_name().to_string();
                 match archive.list() {
@@ -135,6 +177,10 @@ impl RarustApp {
                 }
             }
             Err(e) => {
+                // Flag for password dialog (handled in show_archive_browser)
+                if e.to_string().to_ascii_lowercase().contains("password") {
+                    self.needs_password = true;
+                }
                 self.archive = None;
                 self.load_error = Some(e.to_string());
                 self.status = self.i18n.t(Message::StatusError).to_owned();
@@ -272,7 +318,7 @@ impl RarustApp {
                             ui.close();
                         }
                         if ui.button(self.i18n.t(Message::CreateArchive)).clicked() {
-                            // Will be wired in Task 7
+                            self.create_dialog.visible = true;
                             ui.close();
                         }
                     });
@@ -467,6 +513,43 @@ impl RarustApp {
     }
 
     fn show_archive_browser(&mut self, ui: &mut Ui) {
+        // Password dialog (modal)
+        if let Some(path) = self.archive_path.clone() {
+            if self.needs_password && self.password_dialog.cached(&path).is_none() {
+                self.password_dialog.prompt(&path);
+                self.needs_password = false;
+            }
+            if let Some(pwd) = self.password_dialog.show(ui.ctx(), &path) {
+                self.password = Some(pwd);
+                self.reload_archive();
+            }
+        }
+
+        // Progress dialog
+        self.progress_dialog.render(ui.ctx());
+
+        // Preview panel (before CentralPanel per panel ordering)
+        self.preview.render(ui, 320.0);
+
+        // Tab bar
+        let action = self.tab_bar.render(ui);
+        match action {
+            TabBarAction::NewTab => {
+                self.pick_archive_file();
+            }
+            TabBarAction::CloseTab(idx) => {
+                if idx == self.tab_bar.active {
+                    // Close current tab
+                    self.archive_path = None;
+                    self.archive = None;
+                    self.load_error = None;
+                    self.selected.clear();
+                    self.status = self.i18n.t(Message::StatusReady).to_owned();
+                }
+            }
+            TabBarAction::None => {}
+        }
+
         CentralPanel::default()
             .frame(
                 Frame::NONE
@@ -599,6 +682,60 @@ impl RarustApp {
                         }
                     });
             });
+
+        // Create dialog (modal)
+        let params = self.create_dialog.show(ui);
+        if let Some(params) = params {
+            self.create_archive(params);
+        }
+    }
+
+    fn create_archive(&mut self, params: CreateArchiveParams) {
+        self.status = self.i18n.t(Message::ProgressCreating).to_owned();
+        self.progress_dialog.show(&self.i18n.t(Message::ProgressCreating));
+
+        use rarust_core::archive::ArchiveBuilder;
+        let method = match params.method {
+            CompressionMethod::Store => rarust_core::archive::CompressionMethod::Store,
+            CompressionMethod::Fastest => rarust_core::archive::CompressionMethod::Fastest,
+            CompressionMethod::Fast => rarust_core::archive::CompressionMethod::Fast,
+            CompressionMethod::Normal => rarust_core::archive::CompressionMethod::Normal,
+            CompressionMethod::Good => rarust_core::archive::CompressionMethod::Good,
+            CompressionMethod::Best => rarust_core::archive::CompressionMethod::Best,
+            CompressionMethod::Tqt => rarust_core::archive::CompressionMethod::Normal,
+        };
+
+        let mut builder = ArchiveBuilder::new();
+        builder = builder.with_method(method);
+        if let Some(pwd) = &params.password {
+            builder = builder.with_password(pwd.clone());
+            if params.encrypt_filenames {
+                builder = builder.with_header_encrypt(true);
+            }
+        }
+        if params.split_mb > 0 {
+            builder = builder.with_volume_size(params.split_mb * 1024 * 1024);
+        }
+        for src in &params.source_paths {
+            let p = std::path::Path::new(src);
+            if p.is_dir() {
+                builder = builder.add_file(src);
+            } else {
+                builder = builder.add_file(src);
+            }
+        }
+
+        let result = builder.build(&params.archive_path);
+        self.progress_dialog.hide();
+        match result {
+            Ok(()) => {
+                self.status = "Archive created successfully".to_string();
+                self.open_archive(params.archive_path);
+            }
+            Err(e) => {
+                self.status = format!("{}: {}", self.i18n.t(Message::StatusError), e);
+            }
+        }
     }
 
     fn toggle_sort(&mut self, column: SortBy) {

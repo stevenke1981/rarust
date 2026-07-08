@@ -255,6 +255,7 @@ impl CreateDialog {
             },
             encrypt_filenames: self.encrypt_filenames,
             split_mb: self.split_mb,
+            method: self.method,
         })
     }
 }
@@ -272,6 +273,7 @@ pub struct CreateArchiveParams {
     pub password: Option<String>,
     pub encrypt_filenames: bool,
     pub split_mb: u64,
+    pub method: CompressionMethod,
 }
 
 fn truncate_path(path: &str, max_width: f32) -> String {
