@@ -11,10 +11,14 @@ use rarust_core::entry::Entry;
 use rarust_core::error::RarustError;
 use rarust_core::util;
 
-use super::actions::create_dialog::{CompressionMethod, CreateArchiveParams, CreateDialog};
+use super::actions::create_dialog::{CreateArchiveParams, CreateDialog};
 use super::fonts::FontSetup;
 use super::i18n::{I18n, Locale, Message};
 use super::icons::{IconCache, UiIcon, app_icon};
+use super::jobs::{
+    ActiveJob, JobMessage, JobOutcome, JobProgress, start_create_job, start_extract_job,
+    start_test_job,
+};
 use super::theme::Theme;
 use super::widgets::password::PasswordDialog;
 use super::widgets::preview::FilePreview;
@@ -54,6 +58,7 @@ pub struct RarustApp {
     create_dialog: CreateDialog,
     tab_bar: TabBar,
     icons: IconCache,
+    active_job: Option<ActiveJob>,
 
     /// Set when the opened archive needs a password.
     needs_password: bool,
@@ -101,6 +106,7 @@ impl RarustApp {
             create_dialog: CreateDialog::new(),
             tab_bar: TabBar::new(),
             icons: IconCache::new(),
+            active_job: None,
             needs_password: false,
         };
         if has_archive {
@@ -241,6 +247,10 @@ impl RarustApp {
     }
 
     fn extract_selected(&mut self, entry_name: String, is_directory: bool) {
+        if self.active_job.is_some() {
+            self.status = self.i18n.t(Message::OperationAlreadyRunning).to_string();
+            return;
+        }
         let Some(archive_path) = self.archive_path.clone() else {
             return;
         };
@@ -248,58 +258,108 @@ impl RarustApp {
             return;
         };
 
-        let options = OpenOptions {
-            password: self.password.clone(),
-            ..OpenOptions::default()
-        };
-        let result =
-            PortableArchive::open_with_options(&archive_path, &options).and_then(|archive| {
-                let prefix = if is_directory && !entry_name.ends_with('/') {
-                    format!("{entry_name}/")
-                } else {
-                    entry_name.clone()
-                };
-                archive.extract_with_filter(&dest, |entry| {
-                    if is_directory {
-                        entry.name == entry_name || entry.name.starts_with(&prefix)
-                    } else {
-                        entry.name == entry_name
-                    }
-                })
-            });
+        let title = self.i18n.t(Message::ProgressExtracting).to_owned();
+        self.progress_dialog.show(&title);
+        self.status = title.clone();
+        self.active_job = Some(start_extract_job(
+            archive_path,
+            self.password.clone(),
+            dest,
+            entry_name,
+            is_directory,
+            title,
+        ));
+    }
 
-        match result {
-            Ok(summary) => {
+    fn test_archive(&mut self) {
+        if self.active_job.is_some() {
+            self.status = self.i18n.t(Message::OperationAlreadyRunning).to_string();
+            return;
+        }
+        let Some(archive_path) = self.archive_path.clone() else {
+            return;
+        };
+        let title = self.i18n.t(Message::ProgressTesting).to_owned();
+        self.progress_dialog.show(&title);
+        self.status = title.clone();
+        self.active_job = Some(start_test_job(archive_path, self.password.clone(), title));
+    }
+
+    fn poll_active_job(&mut self, ctx: &egui::Context) {
+        if self.progress_dialog.was_cancelled()
+            && let Some(job) = &self.active_job
+        {
+            job.cancel();
+            self.progress_dialog.update(|state| {
+                state.status = "Cancelling...".to_string();
+                state.indeterminate = true;
+            });
+        }
+
+        let mut finished = None;
+        let mut updates = Vec::new();
+        if let Some(job) = &self.active_job {
+            while let Ok(message) = job.receiver.try_recv() {
+                match message {
+                    JobMessage::Progress(progress) => updates.push(progress),
+                    JobMessage::Finished(outcome) => {
+                        finished = Some(outcome);
+                        break;
+                    }
+                }
+            }
+        }
+
+        for progress in updates {
+            self.apply_job_progress(progress);
+        }
+
+        if let Some(outcome) = finished {
+            self.active_job = None;
+            self.progress_dialog.hide();
+            self.handle_job_outcome(outcome);
+        }
+
+        if self.active_job.is_some() {
+            ctx.request_repaint();
+        }
+    }
+
+    fn apply_job_progress(&mut self, progress: JobProgress) {
+        self.progress_dialog.update(|state| {
+            state.title = progress.title;
+            state.status = progress.status;
+            state.indeterminate = progress.progress.is_none();
+            state.progress = progress.progress.unwrap_or_default();
+            state.total_bytes = progress.total_bytes;
+            state.processed_bytes = progress.processed_bytes;
+            state.speed_bytes_per_sec = progress.speed_bytes_per_sec;
+        });
+    }
+
+    fn handle_job_outcome(&mut self, outcome: JobOutcome) {
+        match outcome {
+            JobOutcome::Extracted { summary, dest } => {
                 self.status = format!(
                     "Extracted {} entries to {}",
                     summary.extracted,
                     dest.display()
                 );
             }
-            Err(error) => {
-                self.status = format!("{}: {}", self.i18n.t(Message::StatusError), error);
-            }
-        }
-    }
-
-    fn test_archive(&mut self) {
-        let Some(archive_path) = self.archive_path.clone() else {
-            return;
-        };
-        let options = OpenOptions {
-            password: self.password.clone(),
-            ..OpenOptions::default()
-        };
-        match PortableArchive::open_with_options(&archive_path, &options)
-            .and_then(|archive| archive.test_all())
-        {
-            Ok(summary) => {
+            JobOutcome::Tested(summary) => {
                 self.status = format!(
                     "Test completed: {} entries OK, {} failed",
                     summary.tested, summary.failed
                 );
             }
-            Err(error) => {
+            JobOutcome::Created { archive_path } => {
+                self.status = "Archive created successfully".to_string();
+                self.open_archive(archive_path);
+            }
+            JobOutcome::Cancelled => {
+                self.status = "Operation cancelled".to_string();
+            }
+            JobOutcome::Failed(error) => {
                 self.status = format!("{}: {}", self.i18n.t(Message::StatusError), error);
             }
         }
@@ -762,52 +822,14 @@ impl RarustApp {
     }
 
     fn create_archive(&mut self, params: CreateArchiveParams) {
-        self.status = self.i18n.t(Message::ProgressCreating).to_owned();
-        self.progress_dialog
-            .show(&self.i18n.t(Message::ProgressCreating));
-
-        use rarust_core::archive::ArchiveBuilder;
-        let method = match params.method {
-            CompressionMethod::Store => rarust_core::archive::CompressionMethod::Store,
-            CompressionMethod::Fastest => rarust_core::archive::CompressionMethod::Fastest,
-            CompressionMethod::Fast => rarust_core::archive::CompressionMethod::Fast,
-            CompressionMethod::Normal => rarust_core::archive::CompressionMethod::Normal,
-            CompressionMethod::Good => rarust_core::archive::CompressionMethod::Good,
-            CompressionMethod::Best => rarust_core::archive::CompressionMethod::Best,
-            CompressionMethod::Tqt => rarust_core::archive::CompressionMethod::Normal,
-        };
-
-        let mut builder = ArchiveBuilder::new();
-        builder = builder.with_method(method);
-        if let Some(pwd) = &params.password {
-            builder = builder.with_password(pwd.clone());
-            if params.encrypt_filenames {
-                builder = builder.with_header_encrypt(true);
-            }
+        if self.active_job.is_some() {
+            self.status = self.i18n.t(Message::OperationAlreadyRunning).to_string();
+            return;
         }
-        if params.split_mb > 0 {
-            builder = builder.with_volume_size(params.split_mb * 1024 * 1024);
-        }
-        for src in &params.source_paths {
-            let p = std::path::Path::new(src);
-            if p.is_dir() {
-                builder = builder.add_file(src);
-            } else {
-                builder = builder.add_file(src);
-            }
-        }
-
-        let result = builder.build(&params.archive_path);
-        self.progress_dialog.hide();
-        match result {
-            Ok(()) => {
-                self.status = "Archive created successfully".to_string();
-                self.open_archive(params.archive_path);
-            }
-            Err(e) => {
-                self.status = format!("{}: {}", self.i18n.t(Message::StatusError), e);
-            }
-        }
+        let title = self.i18n.t(Message::ProgressCreating).to_owned();
+        self.progress_dialog.show(&title);
+        self.status = title.clone();
+        self.active_job = Some(start_create_job(params, title));
     }
 
     fn toggle_sort(&mut self, column: SortBy) {
@@ -997,6 +1019,16 @@ impl RarustApp {
                         ui.separator();
                         ui.label(util::format_size(entry.size));
                     }
+                    let selected_entries = self.selected_entries();
+                    if selected_entries.len() > 1 {
+                        let selected_size = selected_entries.iter().map(|entry| entry.size).sum();
+                        ui.separator();
+                        ui.label(format!(
+                            "Selected: {} ({})",
+                            selected_entries.len(),
+                            util::format_size(selected_size)
+                        ));
+                    }
                     if let Some(source) = &self.font_setup.cjk_source {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(RichText::new(format!("Font: {source}")).weak().small());
@@ -1025,12 +1057,16 @@ impl eframe::App for RarustApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
         // Apply theme every frame (handles runtime switching)
         self.theme.apply(ctx);
+        self.poll_active_job(ctx);
         // Accept dropped files
         ctx.input(|i| {
             if !i.raw.dropped_files.is_empty() {
                 for file in &i.raw.dropped_files {
-                    if let Some(_path) = &file.path {
-                        // Will be wired as tab open in Task 8
+                    if let Some(path) = &file.path
+                        && is_supported_archive_path(path)
+                    {
+                        self.open_archive(path.display().to_string());
+                        break;
                     }
                 }
             }
@@ -1194,6 +1230,22 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
         .rev()
         .collect();
     format!("{start}...{end}")
+}
+
+fn is_supported_archive_path(path: &std::path::Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(ext.as_str(), "rar" | "zip" | "tar" | "gz")
+        || name.ends_with(".tar.gz")
+        || name.ends_with(".tgz")
 }
 
 fn format_ratio(ratio: f64) -> String {

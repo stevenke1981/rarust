@@ -59,6 +59,10 @@ pub enum RarustError {
     #[error("No files found matching the given pattern")]
     NoFilesFound,
 
+    /// Operation was cancelled by the caller.
+    #[error("Operation cancelled")]
+    Cancelled,
+
     /// Wrapper for underlying `rars` crate errors.
     #[error("RAR backend error: {0}")]
     Rars(#[from] rars::error::Error),

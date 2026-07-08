@@ -8,6 +8,7 @@ mod app;
 mod fonts;
 mod i18n;
 mod icons;
+mod jobs;
 pub mod theme;
 pub mod widgets;
 

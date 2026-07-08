@@ -267,6 +267,7 @@ impl Default for CreateDialog {
 }
 
 /// Parameters returned when the user confirms archive creation.
+#[derive(Clone, Debug)]
 pub struct CreateArchiveParams {
     pub archive_path: String,
     pub source_paths: Vec<String>,

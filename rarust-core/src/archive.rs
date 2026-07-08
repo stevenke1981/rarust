@@ -34,6 +34,21 @@ pub struct OpenOptions {
     pub memory_limit: Option<u64>,
 }
 
+/// Progress update emitted by long-running archive operations.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArchiveProgress {
+    /// Human-readable entry currently being processed.
+    pub current_entry: String,
+    /// Total entries participating in the operation.
+    pub total_entries: u64,
+    /// Entries completed so far.
+    pub completed_entries: u64,
+    /// Total uncompressed bytes participating in the operation, when known.
+    pub total_bytes: u64,
+    /// Uncompressed bytes processed so far, when known.
+    pub processed_bytes: u64,
+}
+
 impl Default for OpenOptions {
     fn default() -> Self {
         OpenOptions {
@@ -142,31 +157,74 @@ impl PortableArchive {
     where
         F: Fn(&Entry) -> bool,
     {
+        self.extract_with_filter_controlled(dest, filter, |_| {}, || false)
+    }
+
+    /// Extract entries matching a predicate with progress and cancellation callbacks.
+    pub fn extract_with_filter_controlled<F, P, C>(
+        &self,
+        dest: &Path,
+        filter: F,
+        on_progress: P,
+        should_cancel: C,
+    ) -> Result<ExtractSummary>
+    where
+        F: Fn(&Entry) -> bool,
+        P: FnMut(ArchiveProgress),
+        C: Fn() -> bool,
+    {
         match self {
-            Self::Rar(archive) => archive.extract_with_filter(dest, filter),
-            Self::Zip { path } => extract_zip(path, dest, filter),
-            Self::Tar { path } => {
-                extract_tar(fs::File::open(path).map_err(RarustError::Io)?, dest, filter)
+            Self::Rar(archive) => {
+                archive.extract_with_filter_controlled(dest, filter, on_progress, should_cancel)
             }
-            Self::TarGz { path } => extract_tar(
+            Self::Zip { path } => {
+                extract_zip_controlled(path, dest, filter, on_progress, should_cancel)
+            }
+            Self::Tar { path } => extract_tar_controlled(
+                fs::File::open(path).map_err(RarustError::Io)?,
+                dest,
+                filter,
+                on_progress,
+                should_cancel,
+            ),
+            Self::TarGz { path } => extract_tar_controlled(
                 GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?),
                 dest,
                 filter,
+                on_progress,
+                should_cancel,
             ),
-            Self::Gzip { path } => extract_gzip(path, dest, filter),
+            Self::Gzip { path } => {
+                extract_gzip_controlled(path, dest, filter, on_progress, should_cancel)
+            }
         }
     }
 
     /// Test archive integrity by streaming extractable file contents to a sink.
     pub fn test_all(&self) -> Result<TestSummary> {
+        self.test_all_controlled(|_| {}, || false)
+    }
+
+    /// Test archive integrity with progress and cancellation callbacks.
+    pub fn test_all_controlled<P, C>(&self, on_progress: P, should_cancel: C) -> Result<TestSummary>
+    where
+        P: FnMut(ArchiveProgress),
+        C: Fn() -> bool,
+    {
         match self {
-            Self::Rar(archive) => archive.test_all(),
-            Self::Zip { path } => test_zip(path),
-            Self::Tar { path } => test_tar(fs::File::open(path).map_err(RarustError::Io)?),
-            Self::TarGz { path } => test_tar(GzDecoder::new(
+            Self::Rar(archive) => archive.test_all_controlled(on_progress, should_cancel),
+            Self::Zip { path } => test_zip_controlled(path, on_progress, should_cancel),
+            Self::Tar { path } => test_tar_controlled(
                 fs::File::open(path).map_err(RarustError::Io)?,
-            )),
-            Self::Gzip { path } => test_gzip(path),
+                on_progress,
+                should_cancel,
+            ),
+            Self::TarGz { path } => test_tar_controlled(
+                GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?),
+                on_progress,
+                should_cancel,
+            ),
+            Self::Gzip { path } => test_gzip_controlled(path, on_progress, should_cancel),
         }
     }
 }
@@ -252,10 +310,28 @@ impl RarArchive {
     where
         F: Fn(&Entry) -> bool,
     {
+        self.extract_with_filter_controlled(dest, filter, |_| {}, || false)
+    }
+
+    /// Extract entries matching a predicate with progress and cancellation callbacks.
+    pub fn extract_with_filter_controlled<F, P, C>(
+        &self,
+        dest: &Path,
+        filter: F,
+        mut on_progress: P,
+        should_cancel: C,
+    ) -> Result<ExtractSummary>
+    where
+        F: Fn(&Entry) -> bool,
+        P: FnMut(ArchiveProgress),
+        C: Fn() -> bool,
+    {
         // Collect entries first to apply filter
         let entries = self.list()?;
         let filtered: Vec<&Entry> = entries.iter().filter(|e| filter(e)).collect();
         let total = filtered.len();
+        let total_bytes = filtered.iter().map(|e| e.size).sum::<u64>();
+        check_cancelled(&should_cancel)?;
 
         // Create destination directory
         std::fs::create_dir_all(dest).map_err(RarustError::Io)?;
@@ -267,16 +343,36 @@ impl RarArchive {
         // Collect member names we want to keep for the extraction callback
         let keep_names: std::collections::HashSet<String> =
             filtered.iter().map(|e| e.name.clone()).collect();
+        let entry_sizes: std::collections::HashMap<String, u64> =
+            filtered.iter().map(|e| (e.name.clone(), e.size)).collect();
 
         let dest_base = dest.to_owned();
         let rars_opts = read_options_from(self.password.as_deref());
+        let mut processed_bytes = 0u64;
+        let mut completed_entries = 0u64;
 
         let mut open_entry = |meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
+            if should_cancel() {
+                return Err(rars::error::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "operation cancelled",
+                )));
+            }
             let name = String::from_utf8_lossy(meta.name_bytes()).to_string();
             if !keep_names.contains(&name) {
                 skipped += 1;
                 return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
             }
+
+            completed_entries += 1;
+            processed_bytes = processed_bytes.saturating_add(*entry_sizes.get(&name).unwrap_or(&0));
+            on_progress(ArchiveProgress {
+                current_entry: name.clone(),
+                total_entries: total as u64,
+                completed_entries,
+                total_bytes,
+                processed_bytes,
+            });
 
             let entry = Entry::from_extracted_meta(meta);
             if let Some(target) = entry.safe_extract_path(&dest_base) {
@@ -313,6 +409,14 @@ impl RarArchive {
         };
 
         extract_result.map_err(map_rars_extract_error)?;
+        check_cancelled(&should_cancel)?;
+        on_progress(ArchiveProgress {
+            current_entry: String::new(),
+            total_entries: total as u64,
+            completed_entries: total as u64,
+            total_bytes,
+            processed_bytes: total_bytes,
+        });
 
         Ok(ExtractSummary {
             total: total as u64,
@@ -327,13 +431,45 @@ impl RarArchive {
     /// This exercises the backend extraction path, including decompression and
     /// checksum validation, without writing output files to disk.
     pub fn test_all(&self) -> Result<TestSummary> {
+        self.test_all_controlled(|_| {}, || false)
+    }
+
+    /// Test archive integrity with progress and cancellation callbacks.
+    pub fn test_all_controlled<P, C>(
+        &self,
+        mut on_progress: P,
+        should_cancel: C,
+    ) -> Result<TestSummary>
+    where
+        P: FnMut(ArchiveProgress),
+        C: Fn() -> bool,
+    {
         let entries = self.list()?;
         let total = entries.len() as u64;
+        let total_bytes = entries.iter().map(|e| e.size).sum::<u64>();
         let mut tested = 0u64;
+        let mut processed_bytes = 0u64;
+        let entry_sizes: std::collections::HashMap<String, u64> =
+            entries.iter().map(|e| (e.name.clone(), e.size)).collect();
         let rars_opts = read_options_from(self.password.as_deref());
 
-        let mut count_entry = |_meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
+        let mut count_entry = |meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
+            if should_cancel() {
+                return Err(rars::error::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "operation cancelled",
+                )));
+            }
+            let name = String::from_utf8_lossy(meta.name_bytes()).to_string();
             tested += 1;
+            processed_bytes = processed_bytes.saturating_add(*entry_sizes.get(&name).unwrap_or(&0));
+            on_progress(ArchiveProgress {
+                current_entry: name,
+                total_entries: total,
+                completed_entries: tested,
+                total_bytes,
+                processed_bytes,
+            });
             Ok(Box::new(std::io::sink()) as Box<dyn Write>)
         };
 
@@ -345,6 +481,7 @@ impl RarArchive {
         };
 
         test_result.map_err(map_rars_extract_error)?;
+        check_cancelled(&should_cancel)?;
 
         Ok(TestSummary {
             total,
@@ -1003,20 +1140,39 @@ fn list_zip(path: &Path) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-fn extract_zip<F>(path: &Path, dest: &Path, filter: F) -> Result<ExtractSummary>
+fn extract_zip_controlled<F, P, C>(
+    path: &Path,
+    dest: &Path,
+    filter: F,
+    mut on_progress: P,
+    should_cancel: C,
+) -> Result<ExtractSummary>
 where
     F: Fn(&Entry) -> bool,
+    P: FnMut(ArchiveProgress),
+    C: Fn() -> bool,
 {
     fs::create_dir_all(dest).map_err(RarustError::Io)?;
     let file = fs::File::open(path).map_err(RarustError::Io)?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
     let total = archive.len() as u64;
+    let mut total_bytes = 0u64;
+    for i in 0..archive.len() {
+        let file = archive
+            .by_index(i)
+            .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+        if !file.is_dir() {
+            total_bytes = total_bytes.saturating_add(file.size());
+        }
+    }
     let mut extracted = 0u64;
     let mut skipped = 0u64;
     let errors = 0u64;
+    let mut processed_bytes = 0u64;
 
     for i in 0..archive.len() {
+        check_cancelled(&should_cancel)?;
         let mut file = archive
             .by_index(i)
             .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
@@ -1040,6 +1196,13 @@ where
         if entry.is_directory {
             fs::create_dir_all(&target).map_err(RarustError::Io)?;
             extracted += 1;
+            on_progress(ArchiveProgress {
+                current_entry: entry.name,
+                total_entries: total,
+                completed_entries: extracted + skipped,
+                total_bytes,
+                processed_bytes,
+            });
             continue;
         }
         if let Some(parent) = target.parent() {
@@ -1047,8 +1210,24 @@ where
         }
         match fs::File::create(&target) {
             Ok(mut output) => {
-                std::io::copy(&mut file, &mut output).map_err(RarustError::Io)?;
+                copy_with_progress(&mut file, &mut output, &should_cancel, |copied| {
+                    on_progress(ArchiveProgress {
+                        current_entry: entry.name.clone(),
+                        total_entries: total,
+                        completed_entries: extracted + skipped,
+                        total_bytes,
+                        processed_bytes: processed_bytes.saturating_add(copied),
+                    });
+                })?;
+                processed_bytes = processed_bytes.saturating_add(entry.size);
                 extracted += 1;
+                on_progress(ArchiveProgress {
+                    current_entry: entry.name,
+                    total_entries: total,
+                    completed_entries: extracted + skipped,
+                    total_bytes,
+                    processed_bytes,
+                });
             }
             Err(error) => {
                 return Err(RarustError::Io(error));
@@ -1064,22 +1243,60 @@ where
     })
 }
 
-fn test_zip(path: &Path) -> Result<TestSummary> {
+fn test_zip_controlled<P, C>(
+    path: &Path,
+    mut on_progress: P,
+    should_cancel: C,
+) -> Result<TestSummary>
+where
+    P: FnMut(ArchiveProgress),
+    C: Fn() -> bool,
+{
     let file = fs::File::open(path).map_err(RarustError::Io)?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
-    let mut tested = 0u64;
+    let total = archive.len() as u64;
+    let mut total_bytes = 0u64;
     for i in 0..archive.len() {
-        let mut file = archive
+        let file = archive
             .by_index(i)
             .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
         if !file.is_dir() {
-            std::io::copy(&mut file, &mut std::io::sink()).map_err(RarustError::Io)?;
+            total_bytes = total_bytes.saturating_add(file.size());
+        }
+    }
+    let mut tested = 0u64;
+    let mut processed_bytes = 0u64;
+    for i in 0..archive.len() {
+        check_cancelled(&should_cancel)?;
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| RarustError::Format(format!("ZIP error: {e}")))?;
+        let name = file.name().to_string();
+        let size = file.size();
+        if !file.is_dir() {
+            copy_with_progress(&mut file, &mut std::io::sink(), &should_cancel, |copied| {
+                on_progress(ArchiveProgress {
+                    current_entry: name.clone(),
+                    total_entries: total,
+                    completed_entries: tested,
+                    total_bytes,
+                    processed_bytes: processed_bytes.saturating_add(copied),
+                });
+            })?;
+            processed_bytes = processed_bytes.saturating_add(size);
         }
         tested += 1;
+        on_progress(ArchiveProgress {
+            current_entry: name,
+            total_entries: total,
+            completed_entries: tested,
+            total_bytes,
+            processed_bytes,
+        });
     }
     Ok(TestSummary {
-        total: archive.len() as u64,
+        total,
         tested,
         failed: 0,
     })
@@ -1109,10 +1326,18 @@ fn list_tar<R: Read>(reader: R, method: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-fn extract_tar<R, F>(reader: R, dest: &Path, filter: F) -> Result<ExtractSummary>
+fn extract_tar_controlled<R, F, P, C>(
+    reader: R,
+    dest: &Path,
+    filter: F,
+    mut on_progress: P,
+    should_cancel: C,
+) -> Result<ExtractSummary>
 where
     R: Read,
     F: Fn(&Entry) -> bool,
+    P: FnMut(ArchiveProgress),
+    C: Fn() -> bool,
 {
     fs::create_dir_all(dest).map_err(RarustError::Io)?;
     let mut archive = tar::Archive::new(reader);
@@ -1120,8 +1345,10 @@ where
     let mut extracted = 0u64;
     let mut skipped = 0u64;
     let errors = 0u64;
+    let mut processed_bytes = 0u64;
 
     for item in archive.entries().map_err(RarustError::Io)? {
+        check_cancelled(&should_cancel)?;
         let mut tar_entry = item.map_err(RarustError::Io)?;
         total += 1;
         let path = tar_entry
@@ -1154,9 +1381,26 @@ where
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(RarustError::Io)?;
             }
-            tar_entry.unpack(&target).map_err(RarustError::Io)?;
+            let mut output = fs::File::create(&target).map_err(RarustError::Io)?;
+            copy_with_progress(&mut tar_entry, &mut output, &should_cancel, |copied| {
+                on_progress(ArchiveProgress {
+                    current_entry: entry.name.clone(),
+                    total_entries: total,
+                    completed_entries: extracted + skipped,
+                    total_bytes: 0,
+                    processed_bytes: processed_bytes.saturating_add(copied),
+                });
+            })?;
+            processed_bytes = processed_bytes.saturating_add(entry.size);
         }
         extracted += 1;
+        on_progress(ArchiveProgress {
+            current_entry: entry.name,
+            total_entries: total,
+            completed_entries: extracted + skipped,
+            total_bytes: 0,
+            processed_bytes,
+        });
     }
 
     Ok(ExtractSummary {
@@ -1167,17 +1411,50 @@ where
     })
 }
 
-fn test_tar<R: Read>(reader: R) -> Result<TestSummary> {
+fn test_tar_controlled<R, P, C>(
+    reader: R,
+    mut on_progress: P,
+    should_cancel: C,
+) -> Result<TestSummary>
+where
+    R: Read,
+    P: FnMut(ArchiveProgress),
+    C: Fn() -> bool,
+{
     let mut archive = tar::Archive::new(reader);
     let mut total = 0u64;
     let mut tested = 0u64;
+    let mut processed_bytes = 0u64;
     for item in archive.entries().map_err(RarustError::Io)? {
+        check_cancelled(&should_cancel)?;
         let mut entry = item.map_err(RarustError::Io)?;
         total += 1;
+        let path = entry
+            .path()
+            .map_err(RarustError::Io)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let size = entry.header().size().unwrap_or(0);
         if entry.header().entry_type().is_file() {
-            std::io::copy(&mut entry, &mut std::io::sink()).map_err(RarustError::Io)?;
+            copy_with_progress(&mut entry, &mut std::io::sink(), &should_cancel, |copied| {
+                on_progress(ArchiveProgress {
+                    current_entry: path.clone(),
+                    total_entries: total,
+                    completed_entries: tested,
+                    total_bytes: 0,
+                    processed_bytes: processed_bytes.saturating_add(copied),
+                });
+            })?;
+            processed_bytes = processed_bytes.saturating_add(size);
         }
         tested += 1;
+        on_progress(ArchiveProgress {
+            current_entry: path,
+            total_entries: total,
+            completed_entries: tested,
+            total_bytes: 0,
+            processed_bytes,
+        });
     }
     Ok(TestSummary {
         total,
@@ -1201,9 +1478,17 @@ fn list_gzip(path: &Path) -> Result<Vec<Entry>> {
     )])
 }
 
-fn extract_gzip<F>(path: &Path, dest: &Path, filter: F) -> Result<ExtractSummary>
+fn extract_gzip_controlled<F, P, C>(
+    path: &Path,
+    dest: &Path,
+    filter: F,
+    mut on_progress: P,
+    should_cancel: C,
+) -> Result<ExtractSummary>
 where
     F: Fn(&Entry) -> bool,
+    P: FnMut(ArchiveProgress),
+    C: Fn() -> bool,
 {
     fs::create_dir_all(dest).map_err(RarustError::Io)?;
     let entry = list_gzip(path)?.remove(0);
@@ -1228,7 +1513,22 @@ where
     }
     let mut decoder = GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?);
     let mut output = fs::File::create(target).map_err(RarustError::Io)?;
-    std::io::copy(&mut decoder, &mut output).map_err(RarustError::Io)?;
+    let copied = copy_with_progress(&mut decoder, &mut output, &should_cancel, |copied| {
+        on_progress(ArchiveProgress {
+            current_entry: entry.name.clone(),
+            total_entries: 1,
+            completed_entries: 0,
+            total_bytes: entry.size,
+            processed_bytes: copied,
+        });
+    })?;
+    on_progress(ArchiveProgress {
+        current_entry: entry.name,
+        total_entries: 1,
+        completed_entries: 1,
+        total_bytes: copied,
+        processed_bytes: copied,
+    });
     Ok(ExtractSummary {
         total: 1,
         extracted: 1,
@@ -1237,9 +1537,37 @@ where
     })
 }
 
-fn test_gzip(path: &Path) -> Result<TestSummary> {
+fn test_gzip_controlled<P, C>(
+    path: &Path,
+    mut on_progress: P,
+    should_cancel: C,
+) -> Result<TestSummary>
+where
+    P: FnMut(ArchiveProgress),
+    C: Fn() -> bool,
+{
     let mut decoder = GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?);
-    std::io::copy(&mut decoder, &mut std::io::sink()).map_err(RarustError::Io)?;
+    let copied = copy_with_progress(
+        &mut decoder,
+        &mut std::io::sink(),
+        &should_cancel,
+        |copied| {
+            on_progress(ArchiveProgress {
+                current_entry: gzip_output_name(path),
+                total_entries: 1,
+                completed_entries: 0,
+                total_bytes: 0,
+                processed_bytes: copied,
+            });
+        },
+    )?;
+    on_progress(ArchiveProgress {
+        current_entry: gzip_output_name(path),
+        total_entries: 1,
+        completed_entries: 1,
+        total_bytes: copied,
+        processed_bytes: copied,
+    });
     Ok(TestSummary {
         total: 1,
         tested: 1,
@@ -1337,9 +1665,46 @@ fn gzip_output_name(path: &Path) -> String {
         .to_string()
 }
 
+fn check_cancelled(should_cancel: &impl Fn() -> bool) -> Result<()> {
+    if should_cancel() {
+        Err(RarustError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn copy_with_progress<R, W, C, P>(
+    reader: &mut R,
+    writer: &mut W,
+    should_cancel: &C,
+    mut on_progress: P,
+) -> Result<u64>
+where
+    R: Read,
+    W: Write,
+    C: Fn() -> bool,
+    P: FnMut(u64),
+{
+    let mut buf = [0u8; 64 * 1024];
+    let mut copied = 0u64;
+    loop {
+        check_cancelled(should_cancel)?;
+        let n = reader.read(&mut buf).map_err(RarustError::Io)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n]).map_err(RarustError::Io)?;
+        copied = copied.saturating_add(n as u64);
+        on_progress(copied);
+    }
+    Ok(copied)
+}
+
 fn map_rars_extract_error(error: rars::error::Error) -> RarustError {
     if matches!(error, rars::error::Error::WrongPasswordOrCorruptData) {
         RarustError::WrongPassword
+    } else if error.to_string().to_ascii_lowercase().contains("cancel") {
+        RarustError::Cancelled
     } else {
         RarustError::Rars(error)
     }

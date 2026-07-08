@@ -59,6 +59,7 @@ impl FromStr for Locale {
 }
 
 /// Translation message keys.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Message {
     AppTitle,
@@ -148,6 +149,7 @@ pub enum Message {
     ProgressTesting,
     ProgressCreating,
     ProgressCompressing,
+    OperationAlreadyRunning,
 }
 
 /// Active locale with translation helpers.
@@ -264,6 +266,7 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::En, Message::ProgressTesting) => "Testing…",
         (Locale::En, Message::ProgressCreating) => "Creating archive…",
         (Locale::En, Message::ProgressCompressing) => "Compressing…",
+        (Locale::En, Message::OperationAlreadyRunning) => "Another operation is already running",
 
         // --- Simplified Chinese ---
         (Locale::ZhHans, Message::AppTitle) => "Rarust — 归档浏览器",
@@ -343,6 +346,7 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHans, Message::ProgressTesting) => "正在测试…",
         (Locale::ZhHans, Message::ProgressCreating) => "正在创建归档…",
         (Locale::ZhHans, Message::ProgressCompressing) => "正在压缩…",
+        (Locale::ZhHans, Message::OperationAlreadyRunning) => "已有其他操作正在执行",
 
         // --- Traditional Chinese ---
         (Locale::ZhHant, Message::AppTitle) => "Rarust — 封存瀏覽器",
@@ -422,6 +426,7 @@ fn translate(locale: Locale, msg: Message) -> &'static str {
         (Locale::ZhHant, Message::ProgressTesting) => "正在測試…",
         (Locale::ZhHant, Message::ProgressCreating) => "正在建立封存…",
         (Locale::ZhHant, Message::ProgressCompressing) => "正在壓縮…",
+        (Locale::ZhHant, Message::OperationAlreadyRunning) => "已有其他操作正在執行",
     }
 }
 
@@ -525,6 +530,7 @@ mod tests {
             Message::ProgressTesting,
             Message::ProgressCreating,
             Message::ProgressCompressing,
+            Message::OperationAlreadyRunning,
         ];
 
         for locale in Locale::ALL {
