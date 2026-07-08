@@ -89,16 +89,15 @@ impl CreateDialog {
                             .hint_text("path/to/archive.rar")
                             .desired_width(300.0),
                     );
-                    if ui.button("Browse…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
+                    if ui.button("Browse…").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
                             .set_title("Save Archive As")
                             .add_filter("RAR", &["rar"])
                             .add_filter("ZIP", &["zip"])
                             .add_filter("TAR", &["tar", "tar.gz", "tgz"])
                             .save_file()
-                        {
-                            self.archive_path = path.display().to_string();
-                        }
+                    {
+                        self.archive_path = path.display().to_string();
                     }
                 });
 
@@ -107,23 +106,21 @@ impl CreateDialog {
                 // Source files
                 ui.horizontal(|ui| {
                     ui.label("Sources:");
-                    if ui.button("Add Files…").clicked() {
-                        if let Some(files) = rfd::FileDialog::new()
+                    if ui.button("Add Files…").clicked()
+                        && let Some(files) = rfd::FileDialog::new()
                             .set_title("Select Files to Add")
                             .pick_files()
-                        {
-                            for f in files {
-                                self.source_paths.push(f.display().to_string());
-                            }
+                    {
+                        for f in files {
+                            self.source_paths.push(f.display().to_string());
                         }
                     }
-                    if ui.button("Add Folder…").clicked() {
-                        if let Some(dir) = rfd::FileDialog::new()
+                    if ui.button("Add Folder…").clicked()
+                        && let Some(dir) = rfd::FileDialog::new()
                             .set_title("Select Folder")
                             .pick_folder()
-                        {
-                            self.source_paths.push(dir.display().to_string());
-                        }
+                    {
+                        self.source_paths.push(dir.display().to_string());
                     }
                 });
 

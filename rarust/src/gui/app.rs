@@ -845,7 +845,7 @@ impl RarustApp {
         let selected = self.selected.contains(&idx);
         let fill = if selected {
             self.theme.selected
-        } else if row % 2 == 0 {
+        } else if row.is_multiple_of(2) {
             self.theme.list_bg
         } else {
             self.theme.row_alt
