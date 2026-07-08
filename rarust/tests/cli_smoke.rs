@@ -149,6 +149,34 @@ fn cli_extract_include_filter_smoke() {
 }
 
 #[test]
+fn cli_extract_dry_run_honors_include_filter_smoke() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let archive = write_fixture(&tmp);
+    let out_dir = tmp.path().join("out-dry-run");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("extract")
+        .arg(&archive)
+        .arg(&out_dir)
+        .arg("--dry-run")
+        .arg("--include")
+        .arg("nested/")
+        .output()
+        .expect("run rarust extract dry-run");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Would extract 1 files"), "stdout: {stdout}");
+    assert!(stdout.contains("nested/world.txt"), "stdout: {stdout}");
+    assert!(!stdout.contains("hello.txt"), "stdout: {stdout}");
+    assert!(!out_dir.exists(), "dry-run should not create destination");
+}
+
+#[test]
 fn cli_extract_progress_smoke() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let archive = write_fixture(&tmp);

@@ -123,13 +123,17 @@ fn dry_run(archive_path: &str, dest: &Path, args: &ExtractArgs) -> Result<()> {
 
     let archive = PortableArchive::open_with_options(archive_path, &options)?;
     let entries = archive.list()?;
+    let matched_entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry_matches(entry, args))
+        .collect();
 
     println!(
         "[Dry Run] Would extract {} files to {}",
-        entries.len(),
+        matched_entries.len(),
         dest.display()
     );
-    for entry in entries.iter().take(20) {
+    for entry in matched_entries.iter().take(20) {
         println!(
             "[Dry Run]   {} → {}/{}",
             entry.name,
@@ -137,13 +141,16 @@ fn dry_run(archive_path: &str, dest: &Path, args: &ExtractArgs) -> Result<()> {
             entry.name
         );
     }
-    if entries.len() > 20 {
-        println!("[Dry Run]   ... and {} more files", entries.len() - 20);
+    if matched_entries.len() > 20 {
+        println!(
+            "[Dry Run]   ... and {} more files",
+            matched_entries.len() - 20
+        );
     }
     println!(
         "[Dry Run] Total: {} files • {}",
-        entries.len(),
-        rarust_core::util::format_size(entries.iter().map(|e| e.size).sum::<u64>())
+        matched_entries.len(),
+        rarust_core::util::format_size(matched_entries.iter().map(|e| e.size).sum::<u64>())
     );
     Ok(())
 }
