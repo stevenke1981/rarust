@@ -1,8 +1,10 @@
 //! egui application state and UI rendering.
 
+use std::collections::HashSet;
+
 use egui::{
-    Button, CentralPanel, Color32, CornerRadius, FontId, Frame, Grid, Label, Margin, Panel,
-    RichText, ScrollArea, Stroke, TextEdit, TextStyle, Ui, Vec2, Visuals,
+    Button, CentralPanel, Color32, Frame, Label, Margin, Panel, RichText, ScrollArea, Stroke,
+    TextEdit, Ui, Vec2,
 };
 use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::entry::Entry;
@@ -11,6 +13,18 @@ use rarust_core::util;
 
 use super::fonts::FontSetup;
 use super::i18n::{I18n, Locale, Message};
+use super::theme::Theme;
+
+/// Sortable column in the entry table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SortBy {
+    Name,
+    Size,
+    Ratio,
+    Modified,
+    Crc32,
+    Method,
+}
 
 /// Main egui application for browsing RAR archives.
 pub struct RarustApp {
@@ -19,7 +33,10 @@ pub struct RarustApp {
     font_setup: FontSetup,
     password: Option<String>,
     search: String,
-    selected: Option<usize>,
+    theme: Theme,
+    selected: HashSet<usize>,
+    sort_by: SortBy,
+    sort_ascending: bool,
     archive: Option<LoadedArchive>,
     load_error: Option<String>,
     status: String,
@@ -29,21 +46,6 @@ struct LoadedArchive {
     family_label: String,
     entries: Vec<Entry>,
 }
-
-const WINDOW: Color32 = Color32::from_rgb(242, 244, 247);
-const CHROME: Color32 = Color32::from_rgb(232, 236, 241);
-const CHROME_DARK: Color32 = Color32::from_rgb(216, 222, 230);
-const LIST_BG: Color32 = Color32::from_rgb(255, 255, 255);
-const HEADER_BG: Color32 = Color32::from_rgb(226, 231, 238);
-const ROW_ALT: Color32 = Color32::from_rgb(248, 250, 252);
-const BORDER: Color32 = Color32::from_rgb(177, 187, 199);
-const TEXT: Color32 = Color32::from_rgb(26, 30, 36);
-const MUTED: Color32 = Color32::from_rgb(83, 93, 107);
-const ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
-const SELECTED: Color32 = Color32::from_rgb(214, 233, 255);
-const SUCCESS: Color32 = Color32::from_rgb(38, 128, 67);
-const WARNING: Color32 = Color32::from_rgb(154, 103, 0);
-const DANGER: Color32 = Color32::from_rgb(184, 40, 31);
 
 impl RarustApp {
     /// Create a new GUI app, optionally bound to an archive path.
@@ -55,13 +57,20 @@ impl RarustApp {
     ) -> Self {
         let i18n = I18n::new(locale);
         let has_archive = archive_path.is_some();
+        let theme = match Theme::load_saved().as_deref() {
+            Some("Dark") => Theme::DARK,
+            _ => Theme::LIGHT,
+        };
         let mut app = Self {
             archive_path,
             i18n,
             font_setup,
             password,
             search: String::new(),
-            selected: None,
+            theme,
+            selected: HashSet::new(),
+            sort_by: SortBy::Name,
+            sort_ascending: true,
             archive: None,
             load_error: None,
             status: if has_archive {
@@ -93,14 +102,14 @@ impl RarustApp {
         let Some(path) = self.archive_path.as_deref() else {
             self.archive = None;
             self.load_error = None;
-            self.selected = None;
+            self.selected.clear();
             self.status = self.i18n.t(Message::StatusReady).to_owned();
             return;
         };
 
         self.status = self.i18n.t(Message::StatusLoading).to_owned();
         self.load_error = None;
-        self.selected = None;
+        self.selected.clear();
 
         let options = OpenOptions {
             password: self.password.clone(),
@@ -138,18 +147,41 @@ impl RarustApp {
             return Vec::new();
         };
         let query = self.search.trim().to_ascii_lowercase();
-        loaded
+        let mut result: Vec<(usize, &Entry)> = loaded
             .entries
             .iter()
             .enumerate()
             .filter(|(_, e)| query.is_empty() || e.name.to_ascii_lowercase().contains(&query))
+            .collect();
+        result.sort_by(|(_, a), (_, b)| {
+            let cmp = match self.sort_by {
+                SortBy::Name => a.name.cmp(&b.name),
+                SortBy::Size => a.size.cmp(&b.size),
+                SortBy::Ratio => a.ratio.partial_cmp(&b.ratio).unwrap_or(std::cmp::Ordering::Equal),
+                SortBy::Modified => a.modified.cmp(&b.modified),
+                SortBy::Crc32 => a.crc32.cmp(&b.crc32),
+                SortBy::Method => a.method.cmp(&b.method),
+            };
+            if self.sort_ascending { cmp } else { cmp.reverse() }
+        });
+        result
+    }
+
+    fn selected_entries(&self) -> Vec<&Entry> {
+        let archive = match self.archive.as_ref() {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+        self.selected
+            .iter()
+            .filter_map(|idx| archive.entries.get(*idx))
             .collect()
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
-        let archive = self.archive.as_ref()?;
-        let selected = self.selected?;
-        archive.entries.get(selected)
+        self.selected.iter().next().and_then(|idx| {
+            self.archive.as_ref()?.entries.get(*idx)
+        })
     }
 
     fn extract_selected(&mut self, entry_name: String, is_directory: bool) {
@@ -221,7 +253,7 @@ impl RarustApp {
         Panel::top("classic_menu")
             .frame(
                 Frame::NONE
-                    .fill(CHROME)
+                    .fill(self.theme.chrome)
                     .inner_margin(Margin::symmetric(8, 2)),
             )
             .show(ui, |ui| {
@@ -231,8 +263,16 @@ impl RarustApp {
                             self.pick_archive_file();
                             ui.close();
                         }
+                        if ui.button(self.i18n.t(Message::CloseArchive)).clicked() {
+                            self.close_archive();
+                            ui.close();
+                        }
                         if ui.button(self.i18n.t(Message::Refresh)).clicked() {
                             self.reload_archive();
+                            ui.close();
+                        }
+                        if ui.button(self.i18n.t(Message::CreateArchive)).clicked() {
+                            // Will be wired in Task 7
                             ui.close();
                         }
                     });
@@ -240,7 +280,7 @@ impl RarustApp {
                     ui.menu_button("Commands", |ui| {
                         if ui
                             .add_enabled(
-                                self.selected_entry().is_some(),
+                                !self.selected.is_empty(),
                                 Button::new(self.i18n.t(Message::Extract)),
                             )
                             .clicked()
@@ -262,6 +302,25 @@ impl RarustApp {
                         }
                     });
 
+                    ui.menu_button(self.i18n.t(Message::Theme), |ui| {
+                        if ui
+                            .selectable_label(self.theme.name == "Light", self.i18n.t(Message::LightTheme))
+                            .clicked()
+                        {
+                            self.theme = Theme::LIGHT;
+                            Theme::save("Light");
+                            ui.close();
+                        }
+                        if ui
+                            .selectable_label(self.theme.name == "Dark", self.i18n.t(Message::DarkTheme))
+                            .clicked()
+                        {
+                            self.theme = Theme::DARK;
+                            Theme::save("Dark");
+                            ui.close();
+                        }
+                    });
+
                     ui.menu_button(self.i18n.t(Message::Language), |ui| {
                         for locale in Locale::ALL {
                             let selected = self.i18n.locale() == locale;
@@ -277,17 +336,26 @@ impl RarustApp {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(self.i18n.t(Message::AppTitle)).color(MUTED));
+                        ui.label(RichText::new(self.i18n.t(Message::AppTitle)).color(self.theme.muted));
                     });
                 });
             });
+    }
+
+    fn close_archive(&mut self) {
+        self.archive_path = None;
+        self.archive = None;
+        self.load_error = None;
+        self.selected.clear();
+        self.search.clear();
+        self.status = self.i18n.t(Message::StatusReady).to_owned();
     }
 
     fn show_toolbar(&mut self, ui: &mut Ui) {
         Panel::top("classic_toolbar")
             .frame(
                 Frame::NONE
-                    .fill(CHROME_DARK)
+                    .fill(self.theme.chrome_dark)
                     .inner_margin(Margin::symmetric(8, 6)),
             )
             .show(ui, |ui| {
@@ -295,38 +363,30 @@ impl RarustApp {
                     if ui
                         .add_sized(
                             [86.0, 38.0],
-                            toolbar_button(self.i18n.t(Message::OpenArchive)),
+                            toolbar_button(self.i18n.t(Message::OpenArchive), self.theme),
                         )
                         .clicked()
                     {
                         self.pick_archive_file();
                     }
 
-                    let selected = self.selected_entry().map(|entry| {
-                        (
-                            entry.name.clone(),
-                            entry.is_directory,
-                            entry.size,
-                            entry.is_encrypted,
-                        )
-                    });
-                    let can_extract = selected.is_some();
+                    let can_extract = !self.selected.is_empty();
                     if ui
                         .add_enabled(
                             can_extract,
-                            Button::new(toolbar_label(self.i18n.t(Message::Extract)))
+                            Button::new(toolbar_label(self.i18n.t(Message::Extract), self.theme))
                                 .min_size(Vec2::new(86.0, 38.0)),
                         )
                         .clicked()
-                        && let Some((name, is_directory, _, _)) = selected.clone()
+                        && let Some(entry) = self.selected_entry().map(|e| (e.name.clone(), e.is_directory))
                     {
-                        self.extract_selected(name, is_directory);
+                        self.extract_selected(entry.0, entry.1);
                     }
 
                     if ui
                         .add_enabled(
                             self.archive_path.is_some(),
-                            Button::new(toolbar_label(self.i18n.t(Message::Test)))
+                            Button::new(toolbar_label(self.i18n.t(Message::Test), self.theme))
                                 .min_size(Vec2::new(86.0, 38.0)),
                         )
                         .clicked()
@@ -335,7 +395,10 @@ impl RarustApp {
                     }
 
                     if ui
-                        .add_sized([86.0, 38.0], toolbar_button(self.i18n.t(Message::Refresh)))
+                        .add_sized(
+                            [86.0, 38.0],
+                            toolbar_button(self.i18n.t(Message::Refresh), self.theme),
+                        )
                         .clicked()
                     {
                         self.reload_archive();
@@ -343,13 +406,15 @@ impl RarustApp {
 
                     ui.separator();
 
-                    if let Some((_, _, size, encrypted)) = selected {
-                        ui.label(RichText::new(util::format_size(size)).color(MUTED));
-                        if encrypted {
-                            ui.label(RichText::new(self.i18n.t(Message::Encrypted)).color(WARNING));
+                    if let Some(entry) = self.selected_entry() {
+                        ui.label(RichText::new(util::format_size(entry.size)).color(self.theme.muted));
+                        if entry.is_encrypted {
+                            ui.label(
+                                RichText::new(self.i18n.t(Message::Encrypted)).color(self.theme.warning),
+                            );
                         }
                     } else {
-                        ui.label(RichText::new(self.i18n.t(Message::SelectFile)).color(MUTED));
+                        ui.label(RichText::new(self.i18n.t(Message::SelectFile)).color(self.theme.muted));
                     }
                 });
             });
@@ -359,15 +424,17 @@ impl RarustApp {
         Panel::top("classic_path_bar")
             .frame(
                 Frame::NONE
-                    .fill(CHROME)
+                    .fill(self.theme.chrome)
                     .inner_margin(Margin::symmetric(8, 6)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(self.i18n.t(Message::Archive)).strong());
-                    archive_path_field(ui, self.archive_path.as_deref().unwrap_or("-"));
+                    archive_path_field(ui, self.archive_path.as_deref().unwrap_or("-"), self.theme);
                     ui.add_space(8.0);
-                    ui.label(RichText::new(self.i18n.t(Message::SearchPlaceholder)).color(MUTED));
+                    ui.label(
+                        RichText::new(self.i18n.t(Message::SearchPlaceholder)).color(self.theme.muted),
+                    );
                     ui.add_sized(
                         [220.0, 24.0],
                         TextEdit::singleline(&mut self.search).desired_width(220.0),
@@ -389,7 +456,7 @@ impl RarustApp {
             )
             .show(ui, |ui| {
                 ui.colored_label(
-                    WARNING,
+                    self.theme.warning,
                     format!(
                         "{}: {}",
                         self.i18n.t(Message::FontWarning),
@@ -401,7 +468,11 @@ impl RarustApp {
 
     fn show_archive_browser(&mut self, ui: &mut Ui) {
         CentralPanel::default()
-            .frame(Frame::NONE.fill(WINDOW).inner_margin(Margin::same(8)))
+            .frame(
+                Frame::NONE
+                    .fill(self.theme.window)
+                    .inner_margin(Margin::same(8)),
+            )
             .show(ui, |ui| {
                 if self.archive_path.is_none() {
                     self.show_welcome_state(ui);
@@ -409,7 +480,7 @@ impl RarustApp {
                 }
 
                 if let Some(err) = &self.load_error {
-                    error_panel(ui, self.i18n.t(Message::StatusError), err);
+                    error_panel(ui, self.i18n.t(Message::StatusError), err, self.theme);
                     ui.add_space(8.0);
                     if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
                         self.pick_archive_file();
@@ -418,7 +489,7 @@ impl RarustApp {
                 }
 
                 let Some(loaded) = &self.archive else {
-                    loading_panel(ui, self.i18n.t(Message::StatusLoading));
+                    loading_panel(ui, self.i18n.t(Message::StatusLoading), self.theme);
                     return;
                 };
 
@@ -427,8 +498,8 @@ impl RarustApp {
                 let total_size = loaded.entries.iter().map(|entry| entry.size).sum::<u64>();
 
                 Frame::NONE
-                    .fill(CHROME)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .fill(self.theme.chrome)
+                    .stroke(Stroke::new(1.0, self.theme.border))
                     .inner_margin(Margin::symmetric(8, 5))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -486,100 +557,166 @@ impl RarustApp {
                 ui,
                 self.i18n.t(Message::EmptyArchive),
                 self.i18n.t(Message::SearchPlaceholder),
+                self.theme,
             );
             return;
         }
 
         Frame::NONE
-            .fill(LIST_BG)
-            .stroke(Stroke::new(1.0, BORDER))
+            .fill(self.theme.list_bg)
+            .stroke(Stroke::new(1.0, self.theme.border))
             .show(ui, |ui| {
-                Grid::new("entry_table_header")
-                    .num_columns(7)
-                    .spacing([12.0, 0.0])
-                    .show(ui, |ui| {
-                        table_header(ui, self.i18n.t(Message::Name), 320.0);
-                        table_header(ui, self.i18n.t(Message::Size), 92.0);
-                        table_header(ui, self.i18n.t(Message::Ratio), 72.0);
-                        table_header(ui, self.i18n.t(Message::Modified), 142.0);
-                        table_header(ui, self.i18n.t(Message::Crc32), 92.0);
-                        table_header(ui, self.i18n.t(Message::Method), 108.0);
-                        table_header(ui, "Attr", 60.0);
-                        ui.end_row();
+                // Sortable header row
+                ui.horizontal(|ui| {
+                    header_clickable(ui, self.i18n.t(Message::Name), 320.0, || {
+                        self.toggle_sort(SortBy::Name);
                     });
+                    header_clickable(ui, self.i18n.t(Message::Size), 92.0, || {
+                        self.toggle_sort(SortBy::Size);
+                    });
+                    header_clickable(ui, self.i18n.t(Message::Ratio), 72.0, || {
+                        self.toggle_sort(SortBy::Ratio);
+                    });
+                    header_clickable(ui, self.i18n.t(Message::Modified), 142.0, || {
+                        self.toggle_sort(SortBy::Modified);
+                    });
+                    header_clickable(ui, self.i18n.t(Message::Crc32), 92.0, || {
+                        self.toggle_sort(SortBy::Crc32);
+                    });
+                    header_clickable(ui, self.i18n.t(Message::Method), 108.0, || {
+                        self.toggle_sort(SortBy::Method);
+                    });
+                    header_clickable(ui, "Attr", 60.0, || {});
+                });
+                ui.end_row();
 
                 ScrollArea::vertical()
                     .id_salt("classic_archive_entry_table")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        Grid::new("entry_table_rows")
-                            .num_columns(7)
-                            .spacing([12.0, 0.0])
-                            .striped(false)
-                            .show(ui, |ui| {
-                                for (row, (idx, entry)) in filtered.iter().enumerate() {
-                                    self.entry_row(ui, *idx, entry, row);
-                                }
-                            });
+                        for (row, (idx, entry)) in filtered.iter().enumerate() {
+                            self.entry_row(ui, *idx, entry, row);
+                        }
                     });
             });
     }
 
-    fn entry_row(&mut self, ui: &mut Ui, idx: usize, entry: &EntryRow, row: usize) {
-        let selected = self.selected == Some(idx);
-        let fill = if selected {
-            SELECTED
-        } else if row % 2 == 0 {
-            LIST_BG
+    fn toggle_sort(&mut self, column: SortBy) {
+        if self.sort_by == column {
+            self.sort_ascending = !self.sort_ascending;
         } else {
-            ROW_ALT
+            self.sort_by = column;
+            self.sort_ascending = true;
+        }
+    }
+
+    fn entry_row(&mut self, ui: &mut Ui, idx: usize, entry: &EntryRow, row: usize) {
+        let selected = self.selected.contains(&idx);
+        let fill = if selected {
+            self.theme.selected
+        } else if row % 2 == 0 {
+            self.theme.list_bg
+        } else {
+            self.theme.row_alt
         };
         let name = if entry.is_directory {
             format!("[DIR] {}", entry.name)
         } else {
             entry.name.clone()
         };
-        let name_color = if entry.is_directory { ACCENT } else { TEXT };
+        let name_color = if entry.is_directory {
+            self.theme.accent
+        } else {
+            self.theme.text
+        };
 
         Frame::NONE
             .fill(fill)
             .inner_margin(Margin::symmetric(4, 1))
             .show(ui, |ui| {
-                if ui
+                let resp = ui
                     .add_sized(
                         [320.0, 22.0],
                         Button::selectable(selected, RichText::new(name).color(name_color))
                             .frame(false),
-                    )
-                    .clicked()
-                {
-                    self.selected = Some(idx);
+                    );
+
+                // Multi-select: Ctrl/Cmd+click toggles, Shift+click extends
+                let shift = ui.input(|i| i.modifiers.shift);
+                let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.mac_cmd);
+                if resp.clicked() {
+                    if ctrl {
+                        if selected {
+                            self.selected.remove(&idx);
+                        } else {
+                            self.selected.insert(idx);
+                        }
+                    } else if shift {
+                        if let Some(last) = self.selected.iter().max() {
+                            let range: HashSet<usize> = if idx > *last {
+                                (*last..=idx).collect()
+                            } else {
+                                (idx..=*last).collect()
+                            };
+                            self.selected.extend(range);
+                        } else {
+                            self.selected.insert(idx);
+                        }
+                    } else {
+                        self.selected.clear();
+                        self.selected.insert(idx);
+                    }
                 }
+
+                // Context menu on right-click
+                resp.context_menu(|ui| {
+                    if ui.button(self.i18n.t(Message::Extract)).clicked() {
+                        if let Some(e) = self.selected_entry() {
+                            self.extract_selected(e.name.clone(), e.is_directory);
+                        }
+                        ui.close();
+                    }
+                    if ui.button(self.i18n.t(Message::CopyPath)).clicked() {
+                        ui.ctx().copy_text(entry.name.clone());
+                        ui.close();
+                    }
+                    if ui.button(self.i18n.t(Message::SelectAll)).clicked() {
+                        let entries = self.filtered_entries();
+                        self.selected = entries.into_iter().map(|(i, _)| i).collect();
+                        ui.close();
+                    }
+                });
             });
-        table_cell(ui, &entry.size, 92.0, true);
-        table_cell(ui, &entry.ratio, 72.0, true);
-        table_cell(ui, &entry.modified, 142.0, false);
-        table_cell(ui, &entry.crc32, 92.0, false);
-        table_cell(ui, &entry.method, 108.0, false);
-        let attrs_color = if entry.is_encrypted { WARNING } else { MUTED };
+        table_cell(ui, &entry.size, 92.0, true, self.theme);
+        table_cell(ui, &entry.ratio, 72.0, true, self.theme);
+        table_cell(ui, &entry.modified, 142.0, false, self.theme);
+        table_cell(ui, &entry.crc32, 92.0, false, self.theme);
+        table_cell(ui, &entry.method, 108.0, false, self.theme);
+        let attrs_color = if entry.is_encrypted {
+            self.theme.warning
+        } else {
+            self.theme.muted
+        };
         table_cell_colored(ui, &entry.attrs, 60.0, attrs_color, false);
         ui.end_row();
     }
 
     fn show_welcome_state(&mut self, ui: &mut Ui) {
         Frame::NONE
-            .fill(LIST_BG)
-            .stroke(Stroke::new(1.0, BORDER))
+            .fill(self.theme.list_bg)
+            .stroke(Stroke::new(1.0, self.theme.border))
             .inner_margin(Margin::symmetric(18, 16))
             .show(ui, |ui| {
                 ui.label(
                     RichText::new(self.i18n.t(Message::Welcome))
                         .heading()
                         .strong()
-                        .color(TEXT),
+                        .color(self.theme.text),
                 );
                 ui.add_space(8.0);
-                ui.label(RichText::new(self.i18n.t(Message::WelcomeDetail)).color(MUTED));
+                ui.label(
+                    RichText::new(self.i18n.t(Message::WelcomeDetail)).color(self.theme.muted),
+                );
                 ui.add_space(14.0);
                 if ui.button(self.i18n.t(Message::OpenArchive)).clicked() {
                     self.pick_archive_file();
@@ -591,13 +728,16 @@ impl RarustApp {
         Panel::bottom("classic_status_bar")
             .frame(
                 Frame::NONE
-                    .fill(CHROME)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .fill(self.theme.chrome)
+                    .stroke(Stroke::new(1.0, self.theme.border))
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.colored_label(status_color(&self.status, &self.i18n), &self.status);
+                    ui.colored_label(
+                        status_color(&self.status, &self.i18n, self.theme),
+                        &self.status,
+                    );
                     if let Some(entry) = self.selected_entry() {
                         ui.separator();
                         ui.label(format!(
@@ -634,6 +774,25 @@ impl eframe::App for RarustApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let title = self.i18n.t(Message::AppTitle);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
+        // Apply theme every frame (handles runtime switching)
+        self.theme.apply(ctx);
+        // Accept dropped files
+        ctx.input(|i| {
+            if !i.raw.dropped_files.is_empty() {
+                for file in &i.raw.dropped_files {
+                    if let Some(_path) = &file.path {
+                        // Will be wired as tab open in Task 8
+                    }
+                }
+            }
+        });
+        // Reload theme from saved config
+        if let Some(saved) = Theme::load_saved() {
+            let desired = if saved == "Dark" { Theme::DARK } else { Theme::LIGHT };
+            if self.theme.name != desired.name {
+                self.theme = if saved == "Dark" { Theme::DARK } else { Theme::LIGHT };
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -646,104 +805,54 @@ impl eframe::App for RarustApp {
     }
 }
 
-fn apply_theme(ctx: &egui::Context) {
-    ctx.set_theme(egui::Theme::Light);
-    let mut style = (*ctx.style_of(egui::Theme::Light)).clone();
-    style.visuals = Visuals::light();
-    style.visuals.override_text_color = Some(TEXT);
-    style.visuals.weak_text_color = Some(MUTED);
-    style.visuals.panel_fill = CHROME;
-    style.visuals.window_fill = WINDOW;
-    style.visuals.faint_bg_color = ROW_ALT;
-    style.visuals.extreme_bg_color = LIST_BG;
-    style.visuals.text_edit_bg_color = Some(LIST_BG);
-    style.visuals.window_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.window_corner_radius = CornerRadius::same(2);
-    style.visuals.menu_corner_radius = CornerRadius::same(2);
-    style.visuals.selection.bg_fill = SELECTED;
-    style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
-    style.visuals.hyperlink_color = ACCENT;
-    style.visuals.warn_fg_color = WARNING;
-    style.visuals.error_fg_color = DANGER;
-    style.visuals.button_frame = true;
-    style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
-
-    for visuals in [
-        &mut style.visuals.widgets.noninteractive,
-        &mut style.visuals.widgets.inactive,
-        &mut style.visuals.widgets.hovered,
-        &mut style.visuals.widgets.active,
-        &mut style.visuals.widgets.open,
-    ] {
-        visuals.corner_radius = CornerRadius::same(2);
-        visuals.bg_stroke = Stroke::new(1.0, BORDER);
-        visuals.fg_stroke = Stroke::new(1.0, TEXT);
-    }
-    style.visuals.widgets.noninteractive.bg_fill = CHROME;
-    style.visuals.widgets.noninteractive.weak_bg_fill = CHROME;
-    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(244, 247, 250);
-    style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(244, 247, 250);
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(228, 240, 252);
-    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(228, 240, 252);
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
-    style.visuals.widgets.active.bg_fill = SELECTED;
-    style.visuals.widgets.active.weak_bg_fill = SELECTED;
-    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
-
-    style.spacing.item_spacing = Vec2::new(6.0, 4.0);
-    style.spacing.button_padding = Vec2::new(10.0, 5.0);
-    style.spacing.interact_size = Vec2::new(32.0, 26.0);
-    style.spacing.window_margin = Margin::same(8);
-    style.spacing.menu_margin = Margin::symmetric(8, 6);
-
-    style
-        .text_styles
-        .insert(TextStyle::Heading, FontId::proportional(18.0));
-    style
-        .text_styles
-        .insert(TextStyle::Body, FontId::proportional(13.0));
-    style
-        .text_styles
-        .insert(TextStyle::Small, FontId::proportional(12.0));
-
-    ctx.set_style_of(egui::Theme::Light, style);
+fn toolbar_button<'a>(label: &'a str, theme: Theme) -> Button<'a> {
+    Button::new(toolbar_label(label, theme)).min_size(Vec2::new(86.0, 38.0))
 }
 
-fn toolbar_button(label: &str) -> Button<'_> {
-    Button::new(toolbar_label(label)).min_size(Vec2::new(86.0, 38.0))
+fn toolbar_label(label: &str, theme: Theme) -> RichText {
+    RichText::new(label).strong().color(theme.text)
 }
 
-fn toolbar_label(label: &str) -> RichText {
-    RichText::new(label).strong().color(TEXT)
-}
-
-fn archive_path_field(ui: &mut Ui, path: &str) {
+fn archive_path_field(ui: &mut Ui, path: &str, theme: Theme) {
     Frame::NONE
-        .fill(LIST_BG)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(theme.list_bg)
+        .stroke(Stroke::new(1.0, theme.border))
         .inner_margin(Margin::symmetric(6, 3))
         .show(ui, |ui| {
             ui.set_min_width(420.0);
-            ui.add(Label::new(RichText::new(path).monospace().color(TEXT)).truncate());
+            ui.add(
+                Label::new(RichText::new(path).monospace().color(theme.text)).truncate(),
+            );
         });
 }
 
-fn table_header(ui: &mut Ui, text: &str, width: f32) {
+fn header_clickable(ui: &mut Ui, text: &str, width: f32, on_click: impl FnOnce()) {
     Frame::NONE
-        .fill(HEADER_BG)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
         .inner_margin(Margin::symmetric(5, 3))
         .show(ui, |ui| {
             ui.set_min_width(width);
-            ui.label(RichText::new(text).strong().color(TEXT));
+            if ui
+                .add(Label::new(RichText::new(text).strong()).sense(egui::Sense::click()))
+                .clicked()
+            {
+                on_click();
+            }
         });
 }
 
-fn table_cell(ui: &mut Ui, text: &str, width: f32, right_aligned: bool) {
-    table_cell_colored(ui, text, width, TEXT, right_aligned);
+fn table_cell(ui: &mut Ui, text: &str, width: f32, right_aligned: bool, theme: Theme) {
+    table_cell_colored(ui, text, width, theme.text, right_aligned);
 }
 
-fn table_cell_colored(ui: &mut Ui, text: &str, width: f32, color: Color32, right_aligned: bool) {
+fn table_cell_colored(
+    ui: &mut Ui,
+    text: &str,
+    width: f32,
+    color: Color32,
+    right_aligned: bool,
+) {
     Frame::NONE
         .inner_margin(Margin::symmetric(4, 1))
         .show(ui, |ui| {
@@ -758,50 +867,50 @@ fn table_cell_colored(ui: &mut Ui, text: &str, width: f32, color: Color32, right
         });
 }
 
-fn error_panel(ui: &mut Ui, title: &str, detail: &str) {
+fn error_panel(ui: &mut Ui, title: &str, detail: &str, theme: Theme) {
     Frame::NONE
         .fill(Color32::from_rgb(255, 236, 233))
-        .stroke(Stroke::new(1.0, DANGER))
+        .stroke(Stroke::new(1.0, theme.danger))
         .inner_margin(Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.label(RichText::new(title).strong().color(DANGER));
+            ui.label(RichText::new(title).strong().color(theme.danger));
             ui.add_space(4.0);
-            ui.label(RichText::new(detail).color(TEXT));
+            ui.label(RichText::new(detail).color(theme.text));
         });
 }
 
-fn empty_panel(ui: &mut Ui, title: &str, detail: &str) {
+fn empty_panel(ui: &mut Ui, title: &str, detail: &str, theme: Theme) {
     Frame::NONE
-        .fill(LIST_BG)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(theme.list_bg)
+        .stroke(Stroke::new(1.0, theme.border))
         .inner_margin(Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.label(RichText::new(title).strong().color(TEXT));
+            ui.label(RichText::new(title).strong().color(theme.text));
             ui.add_space(4.0);
-            ui.label(RichText::new(detail).color(MUTED));
+            ui.label(RichText::new(detail).color(theme.muted));
         });
 }
 
-fn loading_panel(ui: &mut Ui, text: &str) {
+fn loading_panel(ui: &mut Ui, text: &str, theme: Theme) {
     Frame::NONE
-        .fill(LIST_BG)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(theme.list_bg)
+        .stroke(Stroke::new(1.0, theme.border))
         .inner_margin(Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.spinner();
-            ui.label(RichText::new(text).color(MUTED));
+            ui.label(RichText::new(text).color(theme.muted));
         });
 }
 
-fn status_color(status: &str, i18n: &I18n) -> Color32 {
+fn status_color(status: &str, i18n: &I18n, theme: Theme) -> Color32 {
     if status.starts_with(i18n.t(Message::StatusError)) {
-        DANGER
+        theme.danger
     } else if status == i18n.t(Message::StatusLoading) {
-        WARNING
+        theme.warning
     } else if status == i18n.t(Message::StatusReady) || status.starts_with("Extracted") {
-        SUCCESS
+        theme.success
     } else {
-        ACCENT
+        theme.accent
     }
 }
 
@@ -871,7 +980,6 @@ pub fn run_gui(
         native_options,
         Box::new(move |cc| {
             let font_setup = super::fonts::setup_fonts(&cc.egui_ctx);
-            apply_theme(&cc.egui_ctx);
             Ok(Box::new(RarustApp::new(archive, locale, font_setup, pwd)))
         }),
     )

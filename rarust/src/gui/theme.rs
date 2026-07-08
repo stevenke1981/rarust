@@ -6,7 +6,7 @@
 use egui::{Color32, CornerRadius, FontId, Margin, Stroke, TextStyle, Vec2, Visuals};
 
 /// Complete color palette for one theme variant.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     pub name: &'static str,
     pub window: Color32,
