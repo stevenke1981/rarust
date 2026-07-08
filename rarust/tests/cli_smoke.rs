@@ -77,6 +77,50 @@ fn cli_test_json_smoke() {
 }
 
 #[test]
+fn cli_test_progress_smoke() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let archive = write_fixture(&tmp);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("test")
+        .arg(&archive)
+        .output()
+        .expect("run rarust test with progress enabled");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Test completed: 2 entries OK, 0 failed"));
+}
+
+#[test]
+fn cli_test_quiet_subcommand_suppresses_stdout() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let archive = write_fixture(&tmp);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("test")
+        .arg(&archive)
+        .arg("-q")
+        .output()
+        .expect("run rarust test quiet");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "quiet test stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn cli_extract_include_filter_smoke() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let archive = write_fixture(&tmp);

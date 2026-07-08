@@ -3,11 +3,12 @@
 //! Verifies archive by decompressing each entry and checking CRC32.
 
 use crate::cli::TestArgs;
+use crate::commands::progress::{progress_bar, update_progress_bar};
 use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::error::Result;
 
 /// Execute the `test` command.
-pub fn execute(args: &TestArgs, json: bool, quiet: bool) -> Result<()> {
+pub fn execute(args: &TestArgs, json: bool, quiet: bool, no_progress: bool) -> Result<()> {
     let options = OpenOptions {
         password: args.password.clone(),
         ..OpenOptions::default()
@@ -15,7 +16,24 @@ pub fn execute(args: &TestArgs, json: bool, quiet: bool) -> Result<()> {
 
     let archive = PortableArchive::open_with_options(&args.archive, &options)?;
     let entries = archive.list()?;
-    let summary = archive.test_all()?;
+    let total_bytes = entries.iter().map(|entry| entry.size).sum();
+    let progress_bar = if json || quiet || no_progress {
+        None
+    } else {
+        Some(progress_bar("Testing", entries.len() as u64, total_bytes))
+    };
+    let summary = archive.test_all_controlled(
+        |progress| {
+            if let Some(pb) = &progress_bar {
+                update_progress_bar(pb, &progress);
+            }
+        },
+        || false,
+    )?;
+
+    if let Some(pb) = &progress_bar {
+        pb.finish_and_clear();
+    }
 
     if json {
         let results: Vec<_> = entries

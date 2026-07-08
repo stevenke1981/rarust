@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use crate::cli::ExtractArgs;
-use indicatif::{ProgressBar, ProgressStyle};
-use rarust_core::archive::{ArchiveProgress, OpenOptions, PortableArchive};
+use crate::commands::progress::{progress_bar, update_progress_bar};
+use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::error::Result;
 
 /// Execute the `extract` command.
@@ -54,7 +54,7 @@ pub fn execute(args: &ExtractArgs, json: bool, no_progress: bool) -> Result<()> 
     let progress_bar = if json || no_progress {
         None
     } else {
-        Some(progress_bar(matched as u64, total_bytes))
+        Some(progress_bar("Extracting", matched as u64, total_bytes))
     };
 
     let summary = archive.extract_with_filter_controlled(
@@ -112,35 +112,6 @@ fn entry_matches(entry: &rarust_core::entry::Entry, args: &ExtractArgs) -> bool 
         return false;
     }
     true
-}
-
-fn progress_bar(total_entries: u64, total_bytes: u64) -> ProgressBar {
-    let pb = if total_bytes > 0 {
-        ProgressBar::new(total_bytes)
-    } else {
-        ProgressBar::new(total_entries)
-    };
-    let style = ProgressStyle::with_template(
-        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
-    )
-    .unwrap_or_else(|_| ProgressStyle::default_bar())
-    .progress_chars("#>-");
-    pb.set_style(style);
-    pb.set_message("Extracting");
-    pb
-}
-
-fn update_progress_bar(pb: &ProgressBar, progress: &ArchiveProgress) {
-    if progress.total_bytes > 0 {
-        pb.set_length(progress.total_bytes);
-        pb.set_position(progress.processed_bytes.min(progress.total_bytes));
-    } else if progress.total_entries > 0 {
-        pb.set_length(progress.total_entries);
-        pb.set_position(progress.completed_entries.min(progress.total_entries));
-    }
-    if !progress.current_entry.is_empty() {
-        pb.set_message(progress.current_entry.clone());
-    }
 }
 
 /// Preview what would be extracted without writing.
