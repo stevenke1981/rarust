@@ -105,6 +105,61 @@ fn cli_extract_include_filter_smoke() {
 }
 
 #[test]
+fn cli_extract_progress_smoke() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let archive = write_fixture(&tmp);
+    let out_dir = tmp.path().join("out-progress");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("extract")
+        .arg(&archive)
+        .arg(&out_dir)
+        .output()
+        .expect("run rarust extract with progress enabled");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir.join("hello.txt")).expect("read extracted file"),
+        "hello rarust cli\n"
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir.join("nested/world.txt")).expect("read extracted file"),
+        "nested rarust cli\n"
+    );
+}
+
+#[test]
+fn cli_extract_json_suppresses_progress_smoke() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let archive = write_fixture(&tmp);
+    let out_dir = tmp.path().join("out-json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("--json")
+        .arg("extract")
+        .arg(&archive)
+        .arg(&out_dir)
+        .output()
+        .expect("run rarust extract json");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("\"extracted\": 2"));
+    assert!(
+        !stdout.contains("Extracting"),
+        "JSON stdout must not contain progress output: {stdout}"
+    );
+}
+
+#[test]
 fn cli_create_header_encrypt_requires_password_to_open() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let input = tmp.path().join("hidden.txt");
