@@ -84,7 +84,9 @@ fn create_encrypted_roundtrip() {
     let wrong_result = RarArchive::open_with_options(
         &out,
         &OpenOptions {
-            password: Some("wrong".to_string()),
+            password: Some(rarust_core::encryption::Password::from_string(
+                "wrong".to_string(),
+            )),
             ..OpenOptions::default()
         },
     );
@@ -101,7 +103,9 @@ fn create_encrypted_roundtrip() {
     let archive = RarArchive::open_with_options(
         &out,
         &OpenOptions {
-            password: Some("pw123".to_string()),
+            password: Some(rarust_core::encryption::Password::from_string(
+                "pw123".to_string(),
+            )),
             ..OpenOptions::default()
         },
     )

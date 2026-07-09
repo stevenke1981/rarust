@@ -162,7 +162,7 @@ impl RarustApp {
             .or_else(|| self.password.clone());
 
         let options = OpenOptions {
-            password: pwd,
+            password: pwd.map(rarust_core::encryption::Password::from_string),
             ..OpenOptions::default()
         };
 

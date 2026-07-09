@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::encryption::Password;
 use crate::entry::Entry;
 use crate::error::{RarustError, Result};
 use crate::multi;
@@ -26,9 +27,12 @@ use rars::{ArchiveReadOptions, ArchiveReader, ArchiveVersion, FeatureSet};
 /// Options for opening an archive.
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
-    /// Optional password for encrypted archives.
-    pub password: Option<String>,
+    /// Optional password for encrypted archives (zeroized on drop).
+    pub password: Option<Password>,
     /// Whether to keep broken files on CRC error during extraction.
+    ///
+    /// Note: the current `rars` backend has no keep-broken switch; this flag is
+    /// reserved for future use and is currently a no-op beyond being stored.
     pub keep_broken: bool,
     /// Memory limit for decompression dictionary (bytes).
     pub memory_limit: Option<u64>,
@@ -59,6 +63,27 @@ impl Default for OpenOptions {
     }
 }
 
+/// Overwrite policy when an extract target already exists on disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverwritePolicy {
+    /// Always overwrite existing files.
+    #[default]
+    Overwrite,
+    /// Leave existing files untouched.
+    Skip,
+    /// Write to a unique sibling name (`file (1).txt`, …).
+    Rename,
+}
+
+/// Options controlling how members are written during extraction.
+#[derive(Clone, Debug, Default)]
+pub struct ExtractOptions {
+    /// Flatten archive paths to basenames under the destination.
+    pub flat: bool,
+    /// Behavior when the target path already exists.
+    pub overwrite: OverwritePolicy,
+}
+
 /// A parsed RAR archive, ready for listing or extraction.
 pub struct RarArchive {
     /// Primary volume (`part1` / `.rar`) used for listing metadata.
@@ -67,8 +92,8 @@ pub struct RarArchive {
     volumes: Vec<rars::Archive>,
     /// Path this archive was opened from.
     path: PathBuf,
-    /// Password for encrypted archives (stored for extraction).
-    password: Option<Vec<u8>>,
+    /// Password for encrypted archives (zeroized on drop).
+    password: Option<Password>,
 }
 
 /// Archive reader that supports RAR plus portable formats such as ZIP and TAR.GZ.
@@ -173,28 +198,64 @@ impl PortableArchive {
         P: FnMut(ArchiveProgress),
         C: Fn() -> bool,
     {
+        self.extract_with_options_controlled(
+            dest,
+            &ExtractOptions::default(),
+            filter,
+            on_progress,
+            should_cancel,
+        )
+    }
+
+    /// Extract with flat/overwrite options plus progress and cancellation.
+    pub fn extract_with_options_controlled<F, P, C>(
+        &self,
+        dest: &Path,
+        options: &ExtractOptions,
+        filter: F,
+        on_progress: P,
+        should_cancel: C,
+    ) -> Result<ExtractSummary>
+    where
+        F: Fn(&Entry) -> bool,
+        P: FnMut(ArchiveProgress),
+        C: Fn() -> bool,
+    {
         match self {
-            Self::Rar(archive) => {
-                archive.extract_with_filter_controlled(dest, filter, on_progress, should_cancel)
-            }
+            Self::Rar(archive) => archive.extract_with_options_controlled(
+                dest,
+                options,
+                filter,
+                on_progress,
+                should_cancel,
+            ),
+            // Portable formats currently ignore flat/overwrite beyond path safety.
             Self::Zip { path } => {
+                let _ = options;
                 extract_zip_controlled(path, dest, filter, on_progress, should_cancel)
             }
-            Self::Tar { path } => extract_tar_controlled(
-                fs::File::open(path).map_err(RarustError::Io)?,
-                dest,
-                filter,
-                on_progress,
-                should_cancel,
-            ),
-            Self::TarGz { path } => extract_tar_controlled(
-                GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?),
-                dest,
-                filter,
-                on_progress,
-                should_cancel,
-            ),
+            Self::Tar { path } => {
+                let _ = options;
+                extract_tar_controlled(
+                    fs::File::open(path).map_err(RarustError::Io)?,
+                    dest,
+                    filter,
+                    on_progress,
+                    should_cancel,
+                )
+            }
+            Self::TarGz { path } => {
+                let _ = options;
+                extract_tar_controlled(
+                    GzDecoder::new(fs::File::open(path).map_err(RarustError::Io)?),
+                    dest,
+                    filter,
+                    on_progress,
+                    should_cancel,
+                )
+            }
             Self::Gzip { path } => {
+                let _ = options;
                 extract_gzip_controlled(path, dest, filter, on_progress, should_cancel)
             }
         }
@@ -246,7 +307,7 @@ impl RarArchive {
         let volume_paths = multi::detect_volumes(&path);
         multi::ensure_volumes_exist(&volume_paths)?;
 
-        let rars_opts = read_options_from(password.as_ref().map(|s| s.as_bytes()));
+        let rars_opts = read_options_from(password.as_ref().map(|p| p.as_bytes()));
         let mut volumes = Vec::with_capacity(volume_paths.len());
         for vol_path in &volume_paths {
             volumes.push(
@@ -264,7 +325,7 @@ impl RarArchive {
             inner,
             volumes,
             path,
-            password: password.map(|s| s.into_bytes()),
+            password,
         })
     }
 
@@ -318,6 +379,42 @@ impl RarArchive {
         &self,
         dest: &Path,
         filter: F,
+        on_progress: P,
+        should_cancel: C,
+    ) -> Result<ExtractSummary>
+    where
+        F: Fn(&Entry) -> bool,
+        P: FnMut(ArchiveProgress),
+        C: Fn() -> bool,
+    {
+        self.extract_with_options_controlled(
+            dest,
+            &ExtractOptions::default(),
+            filter,
+            on_progress,
+            should_cancel,
+        )
+    }
+
+    /// Extract entries matching a predicate with flat/overwrite options.
+    pub fn extract_with_options<F>(
+        &self,
+        dest: &Path,
+        options: &ExtractOptions,
+        filter: F,
+    ) -> Result<ExtractSummary>
+    where
+        F: Fn(&Entry) -> bool,
+    {
+        self.extract_with_options_controlled(dest, options, filter, |_| {}, || false)
+    }
+
+    /// Extract with flat/overwrite options plus progress and cancellation callbacks.
+    pub fn extract_with_options_controlled<F, P, C>(
+        &self,
+        dest: &Path,
+        options: &ExtractOptions,
+        filter: F,
         mut on_progress: P,
         should_cancel: C,
     ) -> Result<ExtractSummary>
@@ -347,59 +444,86 @@ impl RarArchive {
             filtered.iter().map(|e| (e.name.clone(), e.size)).collect();
 
         let dest_base = dest.to_owned();
-        let rars_opts = read_options_from(self.password.as_deref());
+        let flat = options.flat;
+        let overwrite = options.overwrite;
+        let rars_opts = read_options_from(self.password.as_ref().map(|p| p.as_bytes()));
         let mut processed_bytes = 0u64;
         let mut completed_entries = 0u64;
 
-        let mut open_entry = |meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
-            if should_cancel() {
-                return Err(rars::error::Error::from(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "operation cancelled",
-                )));
-            }
-            let name = String::from_utf8_lossy(meta.name_bytes()).to_string();
-            if !keep_names.contains(&name) {
-                skipped += 1;
-                return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
-            }
-
-            completed_entries += 1;
-            processed_bytes = processed_bytes.saturating_add(*entry_sizes.get(&name).unwrap_or(&0));
-            on_progress(ArchiveProgress {
-                current_entry: name.clone(),
-                total_entries: total as u64,
-                completed_entries,
-                total_bytes,
-                processed_bytes,
-            });
-
-            let entry = Entry::from_extracted_meta(meta);
-            if let Some(target) = entry.safe_extract_path(&dest_base) {
-                if let Some(parent) = target.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+        let mut open_entry =
+            |meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
+                if should_cancel() {
+                    return Err(rars::error::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "operation cancelled",
+                    )));
                 }
-                if meta.is_directory {
-                    let _ = std::fs::create_dir_all(&target);
-                    extracted += 1;
-                    Ok(Box::new(std::io::sink()) as Box<dyn Write>)
+                let name = String::from_utf8_lossy(meta.name_bytes()).to_string();
+                if !keep_names.contains(&name) {
+                    skipped += 1;
+                    return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
+                }
+
+                completed_entries += 1;
+                processed_bytes =
+                    processed_bytes.saturating_add(*entry_sizes.get(&name).unwrap_or(&0));
+                on_progress(ArchiveProgress {
+                    current_entry: name.clone(),
+                    total_entries: total as u64,
+                    completed_entries,
+                    total_bytes,
+                    processed_bytes,
+                });
+
+                let entry = Entry::from_extracted_meta(meta);
+                let target = if flat {
+                    entry.safe_extract_path_flat(&dest_base)
                 } else {
-                    match std::fs::File::create(&target) {
-                        Ok(file) => {
+                    entry.safe_extract_path(&dest_base)
+                };
+
+                let Some(mut target) = target else {
+                    skipped += 1;
+                    return Ok(Box::new(std::io::sink()) as Box<dyn Write>);
+                };
+
+                if let Some(parent) = target.parent()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    errors += 1;
+                    return Err(rars::error::Error::from(e));
+                }
+
+                if meta.is_directory {
+                    match std::fs::create_dir_all(&target) {
+                        Ok(()) => {
                             extracted += 1;
-                            Ok(Box::new(file) as Box<dyn Write>)
+                            Ok(Box::new(std::io::sink()) as Box<dyn Write>)
                         }
                         Err(e) => {
                             errors += 1;
                             Err(rars::error::Error::from(e))
                         }
                     }
+                } else {
+                    match resolve_extract_target(&mut target, overwrite) {
+                        TargetAction::Skip => {
+                            skipped += 1;
+                            Ok(Box::new(std::io::sink()) as Box<dyn Write>)
+                        }
+                        TargetAction::Write => match std::fs::File::create(&target) {
+                            Ok(file) => {
+                                extracted += 1;
+                                Ok(Box::new(file) as Box<dyn Write>)
+                            }
+                            Err(e) => {
+                                errors += 1;
+                                Err(rars::error::Error::from(e))
+                            }
+                        },
+                    }
                 }
-            } else {
-                skipped += 1;
-                Ok(Box::new(std::io::sink()) as Box<dyn Write>)
-            }
-        };
+            };
 
         let extract_result = if self.is_multivolume() {
             rars::extract_volumes_to_with_options(&self.volumes, rars_opts, &mut open_entry)
@@ -451,7 +575,7 @@ impl RarArchive {
         let mut processed_bytes = 0u64;
         let entry_sizes: std::collections::HashMap<String, u64> =
             entries.iter().map(|e| (e.name.clone(), e.size)).collect();
-        let rars_opts = read_options_from(self.password.as_deref());
+        let rars_opts = read_options_from(self.password.as_ref().map(|p| p.as_bytes()));
 
         let mut count_entry = |meta: &rars::ExtractedEntryMeta| -> std::result::Result<Box<dyn Write>, rars::error::Error> {
             if should_cancel() {
@@ -1708,6 +1832,51 @@ fn map_rars_extract_error(error: rars::error::Error) -> RarustError {
     } else {
         RarustError::Rars(error)
     }
+}
+
+enum TargetAction {
+    Write,
+    Skip,
+}
+
+/// Apply overwrite policy; may rewrite `target` when renaming.
+fn resolve_extract_target(target: &mut PathBuf, policy: OverwritePolicy) -> TargetAction {
+    if !target.exists() {
+        return TargetAction::Write;
+    }
+    match policy {
+        OverwritePolicy::Overwrite => TargetAction::Write,
+        OverwritePolicy::Skip => TargetAction::Skip,
+        OverwritePolicy::Rename => {
+            *target = unique_sibling_path(target);
+            TargetAction::Write
+        }
+    }
+}
+
+/// Build `name (1).ext`, `name (2).ext`, … next to an existing path.
+fn unique_sibling_path(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = path.extension().and_then(|e| e.to_str());
+    for n in 1..10_000u32 {
+        let name = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Extremely unlikely fallback
+    parent.join(format!(
+        "{stem}-{}.tmp",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ))
 }
 
 /// Write RAR5 multi-volume payloads to `dest.part1.rar`, `dest.part2.rar`, ...

@@ -5,7 +5,7 @@
 //! with additional computed fields.
 
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// High-level metadata for a single archive member (file or directory).
 #[derive(Clone, Debug, Serialize)]
@@ -113,24 +113,173 @@ impl Entry {
         }
     }
 
-    /// Return the local filesystem-safe path components for extraction.
+    /// Return the local filesystem-safe path for extraction under `dest`.
     ///
-    /// Rejects paths that would escape the destination directory (directory
-    /// traversal prevention).
-    pub fn safe_extract_path(&self, dest: &Path) -> Option<std::path::PathBuf> {
-        let name = self.name.replace('\\', "/");
-        // Reject absolute paths or paths with ".." components
-        if name.starts_with('/') || name.contains("..") {
+    /// Rejects absolute paths, drive letters, UNC roots, and `..` components so
+    /// archive members cannot escape the destination directory.
+    pub fn safe_extract_path(&self, dest: &Path) -> Option<PathBuf> {
+        safe_join_under(dest, &self.name, false)
+    }
+
+    /// Like [`safe_extract_path`], but only uses the final path segment (flat extract).
+    pub fn safe_extract_path_flat(&self, dest: &Path) -> Option<PathBuf> {
+        safe_join_under(dest, &self.name, true)
+    }
+}
+
+/// Join an archive member name under `dest` after sanitizing path components.
+///
+/// When `flat` is true, only the final non-empty segment is used as the filename.
+pub fn safe_join_under(dest: &Path, archive_name: &str, flat: bool) -> Option<PathBuf> {
+    let normalized = archive_name.replace('\\', "/");
+    if normalized.is_empty() || normalized.contains('\0') {
+        return None;
+    }
+
+    // Absolute POSIX / UNC-style / rooted paths
+    if normalized.starts_with('/') {
+        return None;
+    }
+
+    // Windows drive-absolute: "C:/...", "c:foo" is also rejected for safety
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return None;
+    }
+
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+
+    if segments.is_empty() {
+        return None;
+    }
+
+    if segments.contains(&"..") {
+        return None;
+    }
+
+    // Reject Windows reserved device names in any segment (CON, NUL, COM1, …)
+    if segments.iter().any(|s| is_windows_reserved_name(s)) {
+        return None;
+    }
+
+    let chosen: &[&str] = if flat {
+        // Use last segment only (basename)
+        segments.last().map(std::slice::from_ref).unwrap_or(&[])
+    } else {
+        &segments
+    };
+
+    if chosen.is_empty() {
+        return None;
+    }
+
+    let mut out = PathBuf::new();
+    for seg in chosen {
+        // Use Component::Normal only — never Prefix/RootDir/ParentDir
+        let p = Path::new(seg);
+        let mut normals = p.components().filter_map(|c| match c {
+            Component::Normal(os) => Some(os),
+            _ => None,
+        });
+        let first = normals.next()?;
+        // Segment must be a single normal component (no internal separators left)
+        if normals.next().is_some() {
             return None;
         }
-        let target = dest.join(&name);
-        // Ensure the target is within the destination (canonicalization)
-        // For now, a basic containment check; production should use
-        // canonicalize + starts_with on the dest.
-        if target.starts_with(dest) {
-            Some(target)
-        } else {
-            None
-        }
+        out.push(first);
+    }
+
+    let target = dest.join(&out);
+
+    // Structural containment: every component of `out` is relative, so joining
+    // under dest cannot escape via `..`. Extra check for absolute `out` (paranoia).
+    if out.is_absolute() {
+        return None;
+    }
+
+    Some(target)
+}
+
+fn is_windows_reserved_name(name: &str) -> bool {
+    // Strip trailing dots/spaces which Windows also treats specially
+    let base = name.trim_end_matches(['.', ' ']);
+    let stem = base.split('.').next().unwrap_or(base);
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_join_rejects_parent_dir() {
+        let dest = Path::new("/tmp/out");
+        assert!(safe_join_under(dest, "../evil.txt", false).is_none());
+        assert!(safe_join_under(dest, "a/../../evil.txt", false).is_none());
+        assert!(safe_join_under(dest, "ok/../evil.txt", false).is_none());
+    }
+
+    #[test]
+    fn safe_join_rejects_absolute_and_drive() {
+        let dest = Path::new("/tmp/out");
+        assert!(safe_join_under(dest, "/etc/passwd", false).is_none());
+        assert!(safe_join_under(dest, "C:/Windows/system32", false).is_none());
+        assert!(safe_join_under(dest, "c:\\Windows\\system32", false).is_none());
+    }
+
+    #[test]
+    fn safe_join_allows_nested_relative() {
+        let dest = Path::new("/tmp/out");
+        let p = safe_join_under(dest, "nested/world.txt", false).expect("ok");
+        assert_eq!(p, dest.join("nested").join("world.txt"));
+    }
+
+    #[test]
+    fn safe_join_flat_uses_basename() {
+        let dest = Path::new("/tmp/out");
+        let p = safe_join_under(dest, "nested/world.txt", true).expect("ok");
+        assert_eq!(p, dest.join("world.txt"));
+    }
+
+    #[test]
+    fn safe_join_rejects_reserved_device_names() {
+        let dest = Path::new("/tmp/out");
+        assert!(safe_join_under(dest, "NUL", false).is_none());
+        assert!(safe_join_under(dest, "dir/CON.txt", false).is_none());
+    }
+
+    #[test]
+    fn safe_join_normalizes_backslashes() {
+        let dest = Path::new("/tmp/out");
+        let p = safe_join_under(dest, "a\\b\\c.txt", false).expect("ok");
+        assert_eq!(p, dest.join("a").join("b").join("c.txt"));
     }
 }

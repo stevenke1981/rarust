@@ -4,13 +4,20 @@
 
 use crate::cli::TestArgs;
 use crate::commands::progress::{progress_bar, update_progress_bar};
+use crate::password::resolve_cli_password;
 use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::error::Result;
 
 /// Execute the `test` command.
 pub fn execute(args: &TestArgs, json: bool, quiet: bool, no_progress: bool) -> Result<()> {
+    let password = resolve_cli_password(
+        args.password.clone(),
+        args.password_file.as_deref(),
+        args.password_stdin,
+    )?;
+
     let options = OpenOptions {
-        password: args.password.clone(),
+        password,
         ..OpenOptions::default()
     };
 

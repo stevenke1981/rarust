@@ -4,15 +4,23 @@
 //! or name-only format.
 
 use crate::cli::{ListArgs, SortField};
+use crate::password::resolve_cli_password;
 use rarust_core::archive::{OpenOptions, PortableArchive};
 use rarust_core::entry::Entry;
 use rarust_core::error::Result;
 use rarust_core::util;
+use std::collections::BTreeMap;
 
 /// Execute the `list` command.
 pub fn execute(args: &ListArgs, json: bool) -> Result<()> {
+    let password = resolve_cli_password(
+        args.password.clone(),
+        args.password_file.as_deref(),
+        args.password_stdin,
+    )?;
+
     let options = OpenOptions {
-        password: args.password.clone(),
+        password,
         ..OpenOptions::default()
     };
 
@@ -123,38 +131,72 @@ fn print_table(archive_path: &str, entries: &[Entry], archive: &PortableArchive)
 
 /// Print archive listing as a tree (directory hierarchy).
 fn print_tree(entries: &[Entry]) -> Result<()> {
-    let mut printed_dirs = std::collections::BTreeSet::new();
-
-    for entry in entries {
-        let normalized = entry.name.replace('\\', "/");
-        let parts: Vec<_> = normalized
-            .trim_matches('/')
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect();
-        if parts.is_empty() {
-            continue;
-        }
-
-        let dir_count = if entry.is_directory {
-            parts.len()
-        } else {
-            parts.len().saturating_sub(1)
-        };
-
-        for depth in 0..dir_count {
-            let key = parts[..=depth].join("/");
-            if printed_dirs.insert(key) {
-                println!("{}{}/", "  ".repeat(depth), parts[depth]);
-            }
-        }
-
-        if !entry.is_directory {
-            let depth = parts.len().saturating_sub(1);
-            println!("{}{}", "  ".repeat(depth), parts[depth]);
-        }
+    for line in tree_lines(entries) {
+        println!("{line}");
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct TreeNode {
+    is_file: bool,
+    is_directory: bool,
+    children: BTreeMap<String, TreeNode>,
+}
+
+fn tree_lines(entries: &[Entry]) -> Vec<String> {
+    let mut root = TreeNode::default();
+    for entry in entries {
+        insert_tree_entry(&mut root, entry);
+    }
+
+    let mut lines = Vec::new();
+    render_tree(&root, "", &mut lines);
+    lines
+}
+
+fn insert_tree_entry(root: &mut TreeNode, entry: &Entry) {
+    let normalized = entry.name.replace('\\', "/");
+    let parts: Vec<_> = normalized
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return;
+    }
+
+    let mut node = root;
+    for part in parts {
+        node = node.children.entry(part.to_string()).or_default();
+    }
+
+    if entry.is_directory {
+        node.is_directory = true;
+    } else {
+        node.is_file = true;
+    }
+}
+
+fn render_tree(node: &TreeNode, prefix: &str, lines: &mut Vec<String>) {
+    let child_count = node.children.len();
+    for (index, (name, child)) in node.children.iter().enumerate() {
+        let is_last = index + 1 == child_count;
+        let connector = if is_last { "└── " } else { "├── " };
+        let label = if child.is_directory || (!child.is_file && !child.children.is_empty()) {
+            format!("{name}/")
+        } else {
+            name.clone()
+        };
+        lines.push(format!("{prefix}{connector}{label}"));
+
+        let child_prefix = if is_last {
+            format!("{prefix}    ")
+        } else {
+            format!("{prefix}│   ")
+        };
+        render_tree(child, &child_prefix, lines);
+    }
 }
 
 /// Print archive listing as JSON.
@@ -187,5 +229,58 @@ fn sort_entries(entries: &mut [Entry], field: &SortField, reverse: bool) {
     }
     if reverse {
         entries.reverse();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, is_directory: bool) -> Entry {
+        Entry {
+            name: name.to_string(),
+            name_raw: name.as_bytes().to_vec(),
+            size: 0,
+            compressed_size: 0,
+            ratio: 0.0,
+            is_directory,
+            is_encrypted: false,
+            is_stored: true,
+            is_split_before: false,
+            is_split_after: false,
+            modified: None,
+            crc32: None,
+            method: "m0 store".to_string(),
+        }
+    }
+
+    #[test]
+    fn tree_lines_renders_inferred_directories() {
+        let entries = vec![
+            entry("nested/deep/file.txt", false),
+            entry("hello.txt", false),
+            entry("nested/world.txt", false),
+        ];
+
+        assert_eq!(
+            tree_lines(&entries),
+            vec![
+                "├── hello.txt",
+                "└── nested/",
+                "    ├── deep/",
+                "    │   └── file.txt",
+                "    └── world.txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_lines_keeps_explicit_empty_directories() {
+        let entries = vec![entry("empty/", true), entry("nested/world.txt", false)];
+
+        assert_eq!(
+            tree_lines(&entries),
+            vec!["├── empty/", "└── nested/", "    └── world.txt"]
+        );
     }
 }

@@ -1,6 +1,6 @@
 use std::fs;
 
-use rarust_core::archive::{OpenOptions, RarArchive};
+use rarust_core::archive::{ExtractOptions, OpenOptions, OverwritePolicy, RarArchive};
 
 fn rar50_stored_archive() -> Vec<u8> {
     rars::rar50::Rar50Writer::new(rars::rar50::WriterOptions::new(
@@ -77,4 +77,85 @@ fn test_all_streams_archive_to_sink() {
     assert_eq!(summary.total, 2);
     assert_eq!(summary.tested, 2);
     assert_eq!(summary.failed, 0);
+}
+
+#[test]
+fn extract_flat_writes_basenames_only() {
+    let fixture = write_fixture();
+    let archive = RarArchive::open(fixture.path()).expect("open fixture");
+    let out = tempfile::tempdir().expect("temp output dir");
+
+    let summary = archive
+        .extract_with_options(
+            out.path(),
+            &ExtractOptions {
+                flat: true,
+                overwrite: OverwritePolicy::Overwrite,
+            },
+            |_| true,
+        )
+        .expect("flat extract");
+
+    assert_eq!(summary.extracted, 2);
+    assert!(out.path().join("hello.txt").exists());
+    assert!(out.path().join("world.txt").exists());
+    assert!(!out.path().join("nested").exists());
+}
+
+#[test]
+fn extract_skip_does_not_overwrite_existing() {
+    let fixture = write_fixture();
+    let archive = RarArchive::open(fixture.path()).expect("open fixture");
+    let out = tempfile::tempdir().expect("temp output dir");
+
+    fs::write(out.path().join("hello.txt"), b"keep-me").expect("seed existing");
+
+    let summary = archive
+        .extract_with_options(
+            out.path(),
+            &ExtractOptions {
+                flat: false,
+                overwrite: OverwritePolicy::Skip,
+            },
+            |e| e.name == "hello.txt",
+        )
+        .expect("skip extract");
+
+    assert_eq!(summary.extracted, 0);
+    // skipped includes filtered-out members + the existing hello.txt
+    assert!(summary.skipped >= 1);
+    assert_eq!(
+        fs::read_to_string(out.path().join("hello.txt")).expect("read"),
+        "keep-me"
+    );
+}
+
+#[test]
+fn extract_rename_writes_unique_sibling() {
+    let fixture = write_fixture();
+    let archive = RarArchive::open(fixture.path()).expect("open fixture");
+    let out = tempfile::tempdir().expect("temp output dir");
+
+    fs::write(out.path().join("hello.txt"), b"original").expect("seed existing");
+
+    let summary = archive
+        .extract_with_options(
+            out.path(),
+            &ExtractOptions {
+                flat: false,
+                overwrite: OverwritePolicy::Rename,
+            },
+            |e| e.name == "hello.txt",
+        )
+        .expect("rename extract");
+
+    assert_eq!(summary.extracted, 1);
+    assert_eq!(
+        fs::read_to_string(out.path().join("hello.txt")).expect("original"),
+        "original"
+    );
+    assert_eq!(
+        fs::read_to_string(out.path().join("hello (1).txt")).expect("renamed"),
+        "hello rarust\n"
+    );
 }

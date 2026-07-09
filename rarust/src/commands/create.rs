@@ -9,6 +9,7 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use crate::cli::CreateArgs;
+use crate::password::resolve_cli_password;
 use rarust_core::archive::{ArchiveBuilder, ArchiveFormat, CompressionMethod};
 use rarust_core::error::{RarustError, Result};
 
@@ -19,8 +20,14 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
         .with_method(map_method(&args.method))
         .solid(args.solid);
 
-    if let Some(p) = &args.password {
-        builder = builder.with_password(p.clone());
+    let password = resolve_cli_password(
+        args.password.clone(),
+        args.password_file.as_deref(),
+        args.password_stdin,
+    )?;
+    let has_password = password.is_some();
+    if let Some(p) = password {
+        builder = builder.with_password(p.to_string_lossy());
     }
     if let Some(v) = &args.volume {
         match parse_volume(v) {
@@ -36,9 +43,9 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
         builder = builder.with_recovery_percent(r);
     }
     if args.header_encrypt {
-        if args.password.is_none() {
+        if !has_password {
             return Err(RarustError::Unsupported(
-                "header encryption requires --password".to_string(),
+                "header encryption requires a password (--password, --password-file, --password-stdin, or RARUST_PASSWORD)".to_string(),
             ));
         }
         builder = builder.with_header_encrypt(true);
@@ -78,7 +85,7 @@ pub fn execute(args: &CreateArgs) -> Result<()> {
     }
 
     if args.dry_run {
-        let kind = match (args.password.is_some(), args.header_encrypt) {
+        let kind = match (has_password, args.header_encrypt) {
             (true, true) => "header-encrypted ",
             (true, false) => "encrypted ",
             _ => "",

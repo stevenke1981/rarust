@@ -23,6 +23,17 @@ impl Password {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// Return a non-secret owned `String` copy (prefer `as_bytes` when possible).
+    pub fn to_string_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.0).into_owned()
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password([REDACTED])")
+    }
 }
 
 /// Password source priority:
@@ -62,6 +73,49 @@ pub fn password_from_file(path: &std::path::Path) -> std::io::Result<String> {
     } else {
         Ok(String::new())
     }
+}
+
+/// Read a password from the first line of stdin.
+pub fn password_from_stdin() -> std::io::Result<String> {
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line)?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+}
+
+/// Resolve a password from CLI sources in priority order:
+/// 1. explicit CLI argument (caller should warn about process visibility)
+/// 2. `RARUST_PASSWORD` environment variable
+/// 3. first line of `password_file`
+/// 4. first line of stdin when `from_stdin` is true
+///
+/// Returns `None` when no source provided a non-empty password.
+pub fn resolve_password(
+    cli_arg: Option<String>,
+    password_file: Option<&std::path::Path>,
+    from_stdin: bool,
+) -> crate::error::Result<Option<Password>> {
+    if let Some(p) = cli_arg.filter(|s| !s.is_empty()) {
+        warn_cli_password();
+        return Ok(Some(Password::from_string(p)));
+    }
+    if let Some(p) = password_from_env() {
+        return Ok(Some(Password::from_string(p)));
+    }
+    if let Some(path) = password_file {
+        let p = password_from_file(path).map_err(crate::error::RarustError::Io)?;
+        if !p.is_empty() {
+            return Ok(Some(Password::from_string(p)));
+        }
+    }
+    if from_stdin {
+        let p = password_from_stdin().map_err(crate::error::RarustError::Io)?;
+        if !p.is_empty() {
+            return Ok(Some(Password::from_string(p)));
+        }
+    }
+    Ok(None)
 }
 
 /// Warn about password in process arguments (visible via `ps` on Unix).

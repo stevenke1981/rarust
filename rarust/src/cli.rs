@@ -77,6 +77,14 @@ pub struct CreateArgs {
     #[arg(short = 'p', long = "password")]
     pub password: Option<String>,
 
+    /// Read password from the first line of a file.
+    #[arg(long = "password-file")]
+    pub password_file: Option<String>,
+
+    /// Read password from stdin (first line).
+    #[arg(long = "password-stdin")]
+    pub password_stdin: bool,
+
     /// Encrypt file headers / filenames (requires `--password`).
     #[arg(long = "header-encrypt", alias = "encrypt-filenames")]
     pub header_encrypt: bool,
@@ -130,6 +138,14 @@ pub struct ExtractArgs {
     #[arg(short = 'p', long = "password")]
     pub password: Option<String>,
 
+    /// Read password from the first line of a file.
+    #[arg(long = "password-file")]
+    pub password_file: Option<String>,
+
+    /// Read password from stdin (first line).
+    #[arg(long = "password-stdin")]
+    pub password_stdin: bool,
+
     /// Extract without paths (all to same directory).
     #[arg(short = 'f', long = "flat")]
     pub flat: bool,
@@ -165,6 +181,14 @@ pub struct ListArgs {
     #[arg(short = 'p', long = "password")]
     pub password: Option<String>,
 
+    /// Read password from the first line of a file.
+    #[arg(long = "password-file")]
+    pub password_file: Option<String>,
+
+    /// Read password from stdin (first line).
+    #[arg(long = "password-stdin")]
+    pub password_stdin: bool,
+
     /// Show detailed metadata.
     #[arg(short = 't', long = "tree")]
     pub tree: bool,
@@ -191,6 +215,14 @@ pub struct TestArgs {
     /// Password for encrypted archives.
     #[arg(short = 'p', long = "password")]
     pub password: Option<String>,
+
+    /// Read password from the first line of a file.
+    #[arg(long = "password-file")]
+    pub password_file: Option<String>,
+
+    /// Read password from stdin (first line).
+    #[arg(long = "password-stdin")]
+    pub password_stdin: bool,
 
     /// Only show summary.
     #[arg(short = 'q', long = "quiet")]

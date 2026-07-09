@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod commands;
+pub mod password;
 
 #[cfg(feature = "gui")]
 pub mod gui;

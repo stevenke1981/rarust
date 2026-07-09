@@ -50,7 +50,9 @@ fn create_header_encrypted_roundtrip() {
     let archive = RarArchive::open_with_options(
         &out,
         &OpenOptions {
-            password: Some("hpw".to_string()),
+            password: Some(rarust_core::encryption::Password::from_string(
+                "hpw".to_string(),
+            )),
             ..OpenOptions::default()
         },
     )
@@ -91,7 +93,9 @@ fn create_rar4_header_encrypted_roundtrip() {
     let archive = RarArchive::open_with_options(
         &out,
         &OpenOptions {
-            password: Some("hpw".to_string()),
+            password: Some(rarust_core::encryption::Password::from_string(
+                "hpw".to_string(),
+            )),
             ..OpenOptions::default()
         },
     )

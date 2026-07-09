@@ -72,9 +72,9 @@ fn cli_list_tree_smoke() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello.txt"), "stdout: {stdout}");
-    assert!(stdout.contains("nested/"), "stdout: {stdout}");
-    assert!(stdout.contains("  world.txt"), "stdout: {stdout}");
+    assert!(stdout.contains("├── hello.txt"), "stdout: {stdout}");
+    assert!(stdout.contains("└── nested/"), "stdout: {stdout}");
+    assert!(stdout.contains("    └── world.txt"), "stdout: {stdout}");
     assert!(!stdout.contains("nested/world.txt"), "stdout: {stdout}");
 }
 

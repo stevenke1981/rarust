@@ -5,10 +5,11 @@
 
 use std::path::Path;
 
-use crate::cli::ExtractArgs;
+use crate::cli::{ExtractArgs, OverwriteMode};
 use crate::commands::progress::{progress_bar, update_progress_bar};
-use rarust_core::archive::{OpenOptions, PortableArchive};
-use rarust_core::error::Result;
+use crate::password::resolve_cli_password;
+use rarust_core::archive::{ExtractOptions, OpenOptions, OverwritePolicy, PortableArchive};
+use rarust_core::error::{RarustError, Result};
 
 /// Execute the `extract` command.
 pub fn execute(args: &ExtractArgs, json: bool, no_progress: bool) -> Result<()> {
@@ -18,14 +19,20 @@ pub fn execute(args: &ExtractArgs, json: bool, no_progress: bool) -> Result<()> 
         .map(Path::new)
         .unwrap_or_else(|| Path::new("."));
 
+    let password = resolve_cli_password(
+        args.password.clone(),
+        args.password_file.as_deref(),
+        args.password_stdin,
+    )?;
+
     let options = OpenOptions {
-        password: args.password.clone(),
+        password,
         keep_broken: args.keep_broken,
         ..OpenOptions::default()
     };
 
     if args.dry_run {
-        return dry_run(&args.archive, dest, args);
+        return dry_run(&args.archive, dest, args, &options);
     }
 
     let archive = PortableArchive::open_with_options(&args.archive, &options)?;
@@ -57,8 +64,14 @@ pub fn execute(args: &ExtractArgs, json: bool, no_progress: bool) -> Result<()> 
         Some(progress_bar("Extracting", matched as u64, total_bytes))
     };
 
-    let summary = archive.extract_with_filter_controlled(
+    let extract_opts = ExtractOptions {
+        flat: args.flat,
+        overwrite: map_overwrite(&args.overwrite),
+    };
+
+    let summary = archive.extract_with_options_controlled(
         dest,
+        &extract_opts,
         |entry| entry_matches(entry, args),
         |progress| {
             if let Some(pb) = &progress_bar {
@@ -87,12 +100,32 @@ pub fn execute(args: &ExtractArgs, json: bool, no_progress: bool) -> Result<()> 
             summary.extracted,
             dest.display()
         );
+        if summary.skipped > 0 {
+            println!("Skipped {} entries", summary.skipped);
+        }
         if summary.errors > 0 {
             eprintln!("[WARN] {} errors encountered", summary.errors);
         }
     }
 
+    if summary.errors > 0 {
+        return Err(RarustError::Corrupt(format!(
+            "{} extraction error(s)",
+            summary.errors
+        )));
+    }
+
     Ok(())
+}
+
+fn map_overwrite(mode: &OverwriteMode) -> OverwritePolicy {
+    match mode {
+        OverwriteMode::Overwrite => OverwritePolicy::Overwrite,
+        OverwriteMode::Skip => OverwritePolicy::Skip,
+        OverwriteMode::Rename => OverwritePolicy::Rename,
+        // Non-interactive default: skip rather than block on prompts.
+        OverwriteMode::Ask => OverwritePolicy::Skip,
+    }
 }
 
 /// Return true if an entry passes the include/exclude filters.
@@ -115,42 +148,40 @@ fn entry_matches(entry: &rarust_core::entry::Entry, args: &ExtractArgs) -> bool 
 }
 
 /// Preview what would be extracted without writing.
-fn dry_run(archive_path: &str, dest: &Path, args: &ExtractArgs) -> Result<()> {
-    let options = OpenOptions {
-        password: args.password.clone(),
-        ..OpenOptions::default()
-    };
-
-    let archive = PortableArchive::open_with_options(archive_path, &options)?;
+fn dry_run(
+    archive_path: &str,
+    dest: &Path,
+    args: &ExtractArgs,
+    options: &OpenOptions,
+) -> Result<()> {
+    let archive = PortableArchive::open_with_options(archive_path, options)?;
     let entries = archive.list()?;
-    let matched_entries: Vec<_> = entries
-        .iter()
-        .filter(|entry| entry_matches(entry, args))
-        .collect();
+    let matched: Vec<_> = entries.iter().filter(|e| entry_matches(e, args)).collect();
 
     println!(
         "[Dry Run] Would extract {} files to {}",
-        matched_entries.len(),
+        matched.len(),
         dest.display()
     );
-    for entry in matched_entries.iter().take(20) {
-        println!(
-            "[Dry Run]   {} → {}/{}",
-            entry.name,
-            dest.display(),
-            entry.name
-        );
+    for entry in matched.iter().take(20) {
+        let rel = if args.flat {
+            entry
+                .name
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(entry.name.as_str())
+        } else {
+            entry.name.as_str()
+        };
+        println!("[Dry Run]   {} → {}/{}", entry.name, dest.display(), rel);
     }
-    if matched_entries.len() > 20 {
-        println!(
-            "[Dry Run]   ... and {} more files",
-            matched_entries.len() - 20
-        );
+    if matched.len() > 20 {
+        println!("[Dry Run]   ... and {} more files", matched.len() - 20);
     }
     println!(
         "[Dry Run] Total: {} files • {}",
-        matched_entries.len(),
-        rarust_core::util::format_size(matched_entries.iter().map(|e| e.size).sum::<u64>())
+        matched.len(),
+        rarust_core::util::format_size(matched.iter().map(|e| e.size).sum::<u64>())
     );
     Ok(())
 }

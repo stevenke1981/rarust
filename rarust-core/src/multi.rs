@@ -3,8 +3,16 @@
 //! Detects `.partN.rar` (RAR5+) and legacy `.r00` (RAR4) naming schemes.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::error::{RarustError, Result};
+
+fn part_n_regex() -> &'static regex_lite::Regex {
+    static RE: OnceLock<regex_lite::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex_lite::Regex::new(r"(?i)^(.+)\.part(\d+)\.rar$").expect("partN.rar regex is valid")
+    })
+}
 
 /// Detect if a path belongs to a multi-volume set and return ordered volume paths.
 pub fn detect_volumes(path: impl AsRef<Path>) -> Vec<PathBuf> {
@@ -37,8 +45,7 @@ pub fn ensure_volumes_exist(paths: &[PathBuf]) -> Result<()> {
 /// Detect `name.part1.rar`, `name.part2.rar`, … (RAR5+ standard).
 fn detect_part_n_rar(path: &Path) -> Option<Vec<PathBuf>> {
     let name = path.file_name()?.to_str()?;
-    let re = regex_lite::Regex::new(r"^(.+)\.part(\d+)\.rar$").ok()?;
-    let caps = re.captures(name)?;
+    let caps = part_n_regex().captures(name)?;
     let stem = caps.get(1)?.as_str();
     let parent = path.parent()?;
 

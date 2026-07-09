@@ -65,7 +65,7 @@ pub fn start_extract_job(
 ) -> ActiveJob {
     spawn_job(title, move |cancel, progress| {
         let options = OpenOptions {
-            password,
+            password: password.map(rarust_core::encryption::Password::from_string),
             ..OpenOptions::default()
         };
         let archive = PortableArchive::open_with_options(&archive_path, &options)?;
@@ -93,7 +93,7 @@ pub fn start_extract_job(
 pub fn start_test_job(archive_path: String, password: Option<String>, title: String) -> ActiveJob {
     spawn_job(title, move |cancel, progress| {
         let options = OpenOptions {
-            password,
+            password: password.map(rarust_core::encryption::Password::from_string),
             ..OpenOptions::default()
         };
         let archive = PortableArchive::open_with_options(&archive_path, &options)?;
