@@ -25,6 +25,8 @@ use super::widgets::preview::FilePreview;
 use super::widgets::progress::ProgressDialog;
 use super::widgets::tab_bar::{TabBar, TabBarAction};
 
+const TOOLBAR_BUTTON_SIZE: [f32; 2] = [108.0, 38.0];
+
 /// Sortable column in the entry table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SortBy {
@@ -505,7 +507,7 @@ impl RarustApp {
                     let open = self.i18n.t(Message::OpenArchive).to_owned();
                     if ui
                         .add_sized(
-                            [100.0, 38.0],
+                            TOOLBAR_BUTTON_SIZE,
                             self.toolbar_icon_button(ui, UiIcon::Open, &open),
                         )
                         .clicked()
@@ -516,7 +518,7 @@ impl RarustApp {
                     let create = self.i18n.t(Message::CreateArchive).to_owned();
                     if ui
                         .add_sized(
-                            [100.0, 38.0],
+                            TOOLBAR_BUTTON_SIZE,
                             self.toolbar_icon_button(ui, UiIcon::Create, &create),
                         )
                         .clicked()
@@ -527,10 +529,13 @@ impl RarustApp {
                     let can_extract = !self.selected.is_empty();
                     let extract = self.i18n.t(Message::Extract).to_owned();
                     if ui
-                        .add_enabled(
-                            can_extract,
-                            self.toolbar_icon_button(ui, UiIcon::Extract, &extract),
-                        )
+                        .add_enabled_ui(can_extract, |ui| {
+                            ui.add_sized(
+                                TOOLBAR_BUTTON_SIZE,
+                                self.toolbar_icon_button(ui, UiIcon::Extract, &extract),
+                            )
+                        })
+                        .inner
                         .clicked()
                         && let Some(entry) = self
                             .selected_entry()
@@ -541,10 +546,13 @@ impl RarustApp {
 
                     let test = self.i18n.t(Message::Test).to_owned();
                     if ui
-                        .add_enabled(
-                            self.archive_path.is_some(),
-                            self.toolbar_icon_button(ui, UiIcon::Test, &test),
-                        )
+                        .add_enabled_ui(self.archive_path.is_some(), |ui| {
+                            ui.add_sized(
+                                TOOLBAR_BUTTON_SIZE,
+                                self.toolbar_icon_button(ui, UiIcon::Test, &test),
+                            )
+                        })
+                        .inner
                         .clicked()
                     {
                         self.test_archive();
@@ -553,7 +561,7 @@ impl RarustApp {
                     let refresh = self.i18n.t(Message::Refresh).to_owned();
                     if ui
                         .add_sized(
-                            [100.0, 38.0],
+                            TOOLBAR_BUTTON_SIZE,
                             self.toolbar_icon_button(ui, UiIcon::Refresh, &refresh),
                         )
                         .clicked()
@@ -564,7 +572,7 @@ impl RarustApp {
                     let preview = self.i18n.t(Message::Preview).to_owned();
                     if ui
                         .add_sized(
-                            [100.0, 38.0],
+                            TOOLBAR_BUTTON_SIZE,
                             self.toolbar_icon_button(ui, UiIcon::Preview, &preview),
                         )
                         .clicked()
@@ -573,28 +581,27 @@ impl RarustApp {
                     }
 
                     ui.separator();
-
-                    if let Some((entry_size, is_encrypted)) = self
-                        .selected_entry()
-                        .map(|entry| (entry.size, entry.is_encrypted))
-                    {
-                        ui.label(
-                            RichText::new(util::format_size(entry_size)).color(self.theme.muted),
-                        );
-                        if is_encrypted {
-                            ui.add(self.icons.image(ui.ctx(), UiIcon::Password));
-                            ui.label(
-                                RichText::new(self.i18n.t(Message::Encrypted))
-                                    .color(self.theme.warning),
-                            );
-                        }
-                    } else {
-                        ui.label(
-                            RichText::new(self.i18n.t(Message::SelectFile)).color(self.theme.muted),
-                        );
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.show_selection_summary(ui);
+                    });
                 });
             });
+    }
+
+    fn show_selection_summary(&mut self, ui: &mut Ui) {
+        if let Some((entry_size, is_encrypted)) = self
+            .selected_entry()
+            .map(|entry| (entry.size, entry.is_encrypted))
+        {
+            if is_encrypted {
+                ui.label(RichText::new(self.i18n.t(Message::Encrypted)).color(self.theme.warning));
+                ui.add(self.icons.image(ui.ctx(), UiIcon::Password));
+                ui.separator();
+            }
+            ui.label(RichText::new(util::format_size(entry_size)).color(self.theme.muted));
+        } else {
+            ui.label(RichText::new(self.i18n.t(Message::SelectFile)).color(self.theme.muted));
+        }
     }
 
     fn show_path_bar(&mut self, ui: &mut Ui) {

@@ -409,6 +409,62 @@ fn cli_create_zip_by_extension_roundtrip() {
 }
 
 #[test]
+fn cli_create_zip_unicode_filename_roundtrip() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let filename = "測試-壓縮檔.txt";
+    let input = tmp.path().join(filename);
+    fs::write(&input, "rarust unicode filename\n").expect("write unicode input");
+
+    let archive = tmp.path().join("unicode.zip");
+    let create = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("--no-progress")
+        .arg("create")
+        .arg(&archive)
+        .arg(&input)
+        .output()
+        .expect("run rarust create unicode zip");
+
+    assert!(
+        create.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let list = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("list")
+        .arg(&archive)
+        .arg("--name-only")
+        .output()
+        .expect("run rarust list unicode zip");
+    assert!(
+        list.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(stdout.contains(filename), "stdout: {stdout}");
+
+    let out_dir = tmp.path().join("out");
+    let extract = Command::new(env!("CARGO_BIN_EXE_rarust"))
+        .arg("--no-progress")
+        .arg("extract")
+        .arg(&archive)
+        .arg(&out_dir)
+        .output()
+        .expect("run rarust extract unicode zip");
+
+    assert!(
+        extract.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir.join(filename)).expect("read extracted unicode file"),
+        "rarust unicode filename\n"
+    );
+}
+
+#[test]
 fn cli_create_tar_gz_by_extension_roundtrip() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let input = tmp.path().join("doc.txt");

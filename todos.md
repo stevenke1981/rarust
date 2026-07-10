@@ -358,7 +358,7 @@
 ### M6.4: Cross-Platform Testing
 
 - [ ] 🟡 Windows: long path test (>260 chars)
-- [ ] 🟡 Windows: Unicode filename test
+- [x] ✅ Windows: Unicode filename test
 - [ ] 🟡 macOS: Apple Silicon native test
 - [ ] 🟡 macOS: case-insensitive filesystem test
 - [ ] 🟡 Linux: glibc + musl test
